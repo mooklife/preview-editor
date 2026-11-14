@@ -1,0 +1,20 @@
+{
+  "workspace": "~/my-blog",
+  "drafts_dir": "drafts",
+  "media_allow": ["drafts/"],
+  "host": "127.0.0.1",
+  "port": 3013,
+  "allowed_hosts": ["127.0.0.1:3013", "localhost:3013"],
+  "categories_file": "categories.example.json",
+  "topic_defaults": {},
+  "publisher": "builtin",
+  "publish_cmd": null,
+  "publish_timeout": 600,
+  "env_file": null,
+  "features": {
+    "tistory_summary": false,
+    "tistory_skip_topics": []
+  },
+  "max_body_bytes": 41943040,
+  "title": "Preview Editor"
+}

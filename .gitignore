@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# 자격증명·개인 설정
+.env
+*.env.local
+preview-editor.config.json
+config.json
+
+# 샘플 외 작업 내용
+examples/workspace/drafts/**/images/*
+!examples/workspace/drafts/**/images/.gitkeep
+examples/workspace/.env

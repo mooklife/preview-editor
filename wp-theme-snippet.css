@@ -1,0 +1,85 @@
+/*
+ * Preview Editor — WordPress 테마 스니펫 (선택)
+ *
+ * 에디터 미리보기와 실제 글 화면을 비슷하게 맞추기 위한 최소 CSS입니다.
+ * WP 관리자 → 외모 → 사용자 정의하기 → 추가 CSS (또는 블록 테마의 theme.json/style.css)에 붙여 넣으세요.
+ * 색·폰트는 블록 테마 preset 변수가 있으면 그것을 쓰고, 없으면 아래 기본값을 씁니다.
+ */
+
+.entry-content,
+.wp-block-post-content {
+  --pe-ink: var(--wp--preset--color--ink, #16181b);
+  --pe-ink-soft: var(--wp--preset--color--ink-soft, #4a4f55);
+  --pe-rule: var(--wp--preset--color--rule, #d9dad6);
+  --pe-accent: var(--wp--preset--color--accent, #0b6b72);
+  --pe-sunken: var(--wp--preset--color--paper-sunken, #f2f2ef);
+  max-width: 680px;
+  margin-inline: auto;
+  font-size: 17px;
+  line-height: 1.8;
+  color: var(--pe-ink);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 이미지: 에디터의 #w=NN → style="width:NN%" 로 발행됨 */
+.entry-content img,
+.wp-block-post-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.2em auto;
+  border-radius: 4px;
+}
+
+.entry-content h2,
+.wp-block-post-content h2 {
+  margin-top: 2.2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--pe-rule);
+}
+
+.entry-content h3,
+.wp-block-post-content h3 {
+  margin-top: 1.8em;
+}
+
+.entry-content blockquote,
+.wp-block-post-content blockquote {
+  margin: 1.4em 0;
+  padding: 0.6em 1em;
+  border-left: 3px solid var(--pe-accent);
+  background: var(--pe-sunken);
+  color: var(--pe-ink-soft);
+}
+
+.entry-content table,
+.wp-block-post-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.4em 0;
+  font-size: 15px;
+}
+
+.entry-content th,
+.entry-content td,
+.wp-block-post-content th,
+.wp-block-post-content td {
+  padding: 0.5em 0.7em;
+  border: 1px solid var(--pe-rule);
+}
+
+.entry-content th,
+.wp-block-post-content th {
+  background: var(--pe-sunken);
+  font-weight: 600;
+}
+
+.entry-content pre,
+.wp-block-post-content pre {
+  padding: 1em;
+  overflow-x: auto;
+  background: var(--pe-sunken);
+  border-radius: 4px;
+  font-size: 14px;
+}

@@ -1,0 +1,6 @@
+[
+  { "value": "uncategorized", "label": "Uncategorized", "topic": "general" },
+  { "value": "blog", "label": "Blog", "topic": "general" },
+  { "value": "travel", "label": "Travel", "topic": "travel" },
+  { "value": "review", "label": "Review", "topic": "review" }
+]
