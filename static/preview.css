@@ -629,6 +629,9 @@ body.app {
 .toastui-editor-contents h2 {
   font-size: var(--wp--preset--font-size--h2) !important;
   margin: var(--wp--preset--spacing--70) 0 var(--wp--preset--spacing--40) !important;
+  /* Toast 기본과 동일 · 사이트 테마(.entry-content h2)와 맞춤 */
+  border-bottom: 1px solid var(--wp--preset--color--rule, #d9dad6) !important;
+  padding-bottom: 0.35em !important;
 }
 
 .toastui-editor-contents h3 {
@@ -1112,6 +1115,12 @@ body.is-col-resizing * {
   margin-right: 0;
 }
 
+/* 사진과 같이 표 전체 선택 표시 */
+.toastui-editor-contents table.table-selected {
+  outline: 2px solid var(--wp--preset--color--accent);
+  outline-offset: 3px;
+}
+
 /* 표 편집 툴바 (행·열·병합·정렬) */
 .table-toolbar {
   position: fixed;
@@ -1137,6 +1146,12 @@ body.is-col-resizing * {
   font-weight: 700;
   color: var(--wp--preset--color--accent-ink);
   margin-right: 2px;
+}
+
+.table-toolbar .tbl-label-sub {
+  font-weight: 600;
+  color: var(--wp--preset--color--ink-soft, #4a4f55);
+  margin-left: 2px;
 }
 
 .table-toolbar .btn {

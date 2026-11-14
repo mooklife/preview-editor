@@ -121,13 +121,15 @@
     ${tblIconBtn('data-tbl="mergeCells"', "셀 병합 (여러 칸 선택)", ICO.merge)}
     ${tblIconBtn('data-tbl="splitCells"', "병합 해제", ICO.split)}
     <span class="sep"></span>
-    ${tblIconBtn('data-col-align="left"', "열 왼쪽 정렬", ICO.alignL)}
-    ${tblIconBtn('data-col-align="center"', "열 가운데 정렬", ICO.alignC)}
-    ${tblIconBtn('data-col-align="right"', "열 오른쪽 정렬", ICO.alignR)}
+    <span class="tbl-label tbl-label-sub" title="칸 안 글자 정렬">칸</span>
+    ${tblIconBtn('data-col-align="left"', "칸 글자 왼쪽", ICO.alignL)}
+    ${tblIconBtn('data-col-align="center"', "칸 글자 가운데", ICO.alignC)}
+    ${tblIconBtn('data-col-align="right"', "칸 글자 오른쪽", ICO.alignR)}
     <span class="sep"></span>
-    ${tblIconBtn('data-table-align="left"', "표 왼쪽 배치", ICO.tableL)}
-    ${tblIconBtn('data-table-align="center"', "표 가운데 배치", ICO.tableC)}
-    ${tblIconBtn('data-table-align="right"', "표 오른쪽 배치", ICO.tableR)}
+    <span class="tbl-label tbl-label-sub" title="표 전체 위치 (사진 배치와 같음)">배치</span>
+    ${tblIconBtn('data-table-align="left"', "표 전체 왼쪽", ICO.tableL)}
+    ${tblIconBtn('data-table-align="center"', "표 전체 가운데", ICO.tableC)}
+    ${tblIconBtn('data-table-align="right"', "표 전체 오른쪽", ICO.tableR)}
     <span class="sep"></span>
     ${tblIconBtn('data-tbl="removeTable"', "표 삭제", ICO.trash)}
   `;
@@ -192,6 +194,11 @@
       if (h1) h1.textContent = cfg.title;
     }
     document.body.classList.toggle("no-tistory", !FEATURES.tistory_summary);
+    // boot 전 ensureCategoryOptions()가 빈 목록으로 ready=1 잠그는 레이스 방지
+    if (categorySelect) delete categorySelect.dataset.ready;
+    if (newCategory) delete newCategory.dataset.ready;
+    ensureCategoryOptions();
+    ensureNewCategoryOptions();
   }
 
 
@@ -757,7 +764,14 @@
     return out;
   }
 
+  function clearTableSelectionChrome() {
+    document
+      .querySelectorAll(".toastui-editor-contents table.table-selected")
+      .forEach((t) => t.classList.remove("table-selected"));
+  }
+
   function hideTableToolbar() {
+    clearTableSelectionChrome();
     selectedTable = null;
     tableToolbar.classList.remove("is-open");
     hideColResizeHandles();
@@ -927,7 +941,9 @@
       hideTableToolbar();
       return;
     }
+    clearTableSelectionChrome();
     selectedTable = table;
+    table.classList.add("table-selected");
     tableToolbar.classList.add("is-open");
     setTableAlignClass(table, table.getAttribute("data-table-align") || "");
     positionTableToolbar(table);
@@ -1700,7 +1716,16 @@
   }
 
   function ensureCategoryOptions() {
-    if (categorySelect.dataset.ready === "1") return;
+    // 옵션이 이미 채워졌고 개수가 맞으면 스킵 (설정 로드 전 빈 ready 잠금 방지)
+    const want = 1 + CATEGORY_OPTIONS.length;
+    if (
+      categorySelect.dataset.ready === "1" &&
+      categorySelect.options.length === want &&
+      want > 1
+    ) {
+      return;
+    }
+    const prev = categorySelect.value;
     categorySelect.innerHTML = "";
     const blank = document.createElement("option");
     blank.value = "";
@@ -1712,11 +1737,23 @@
       el.textContent = opt.label;
       categorySelect.appendChild(el);
     }
-    categorySelect.dataset.ready = "1";
+    if (prev && [...categorySelect.options].some((o) => o.value === prev)) {
+      categorySelect.value = prev;
+    }
+    categorySelect.dataset.ready = CATEGORY_OPTIONS.length ? "1" : "0";
   }
 
   function ensureNewCategoryOptions() {
-    if (!newCategory || newCategory.dataset.ready === "1") return;
+    if (!newCategory) return;
+    const want = 1 + CATEGORY_OPTIONS.length;
+    if (
+      newCategory.dataset.ready === "1" &&
+      newCategory.options.length === want &&
+      want > 1
+    ) {
+      return;
+    }
+    const prev = newCategory.value;
     newCategory.innerHTML = "";
     const blank = document.createElement("option");
     blank.value = "";
@@ -1728,7 +1765,10 @@
       el.textContent = opt.label;
       newCategory.appendChild(el);
     }
-    newCategory.dataset.ready = "1";
+    if (prev && [...newCategory.options].some((o) => o.value === prev)) {
+      newCategory.value = prev;
+    }
+    newCategory.dataset.ready = CATEGORY_OPTIONS.length ? "1" : "0";
   }
 
   function isSpacerPara(el) {
@@ -3390,7 +3430,9 @@
       setTableAlignClass(table, tableAlign);
       markDirty();
       positionTableToolbar(table);
-      setStatus(`표 ${tableAlign} 정렬 · 저장 시 md에 반영`, "dirty");
+      const place =
+        tableAlign === "center" ? "가운데" : tableAlign === "right" ? "오른쪽" : "왼쪽";
+      setStatus(`표 전체 ${place} 배치 · 저장 시 md에 반영`, "dirty");
     }
   });
 
