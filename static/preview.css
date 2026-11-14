@@ -1,4 +1,4 @@
-/* Preview Editor — WYSIWYG + theme.json 토큰 (D12 · content 680px) */
+/* story preview — WYSIWYG + theme.json 토큰 (D12 · content 680px) */
 
 :root {
   --wp--preset--color--paper: #fafaf8;
@@ -1365,32 +1365,79 @@ body.is-col-resizing * {
   max-width: 100% !important;
 }
 
-/* —— 본문 image-row (2~3열 높이맞춤) —— */
-.toastui-editor-contents .pe-image-row {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-  margin: calc(0.75em * var(--editor-line, 1.8)) 0;
-  width: 100%;
-}
-.toastui-editor-contents .pe-image-row > p,
-.toastui-editor-contents .pe-image-row > div {
-  flex: 1 1 0;
-  margin: 0 !important;
+/* —— 본문 image-row (티스토리 ImageGrid 참고) —— */
+.toastui-editor-contents p.pe-ir-item {
+  display: inline-block !important;
+  vertical-align: top;
+  margin: 0.75em 10px 0.85em 0 !important;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
+  box-sizing: border-box;
 }
-.toastui-editor-contents .pe-image-row img {
+.toastui-editor-contents p.pe-ir-item.pe-ir-cols-2 {
+  width: calc(50% - 10px) !important;
+}
+.toastui-editor-contents p.pe-ir-item.pe-ir-cols-3 {
+  width: calc(33.33% - 10px) !important;
+}
+.toastui-editor-contents p.pe-ir-item img {
   width: 100% !important;
-  height: 220px !important;
-  max-width: none !important;
+  height: auto !important;
+  max-height: none !important;
+  max-width: 100% !important;
+  object-fit: contain !important;
+  object-position: center top;
+  display: block;
+}
+.toastui-editor-contents em.pe-ir-row-caption,
+.toastui-editor-contents p.pe-ir-caption {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 0 1em !important;
+  font-size: 13px;
+  color: #4a4f55;
+  text-align: center;
+  font-style: normal;
+}
+
+/* 이미지 → 옆 사진으로 드래그해 가로묶기 */
+.pe-drop-hint {
+  position: fixed;
+  z-index: 70;
+  width: 5px;
+  border-radius: 3px;
+  background: var(--wp--preset--color--accent);
+  box-shadow: 0 0 0 2px rgba(11, 107, 114, 0.25);
+  pointer-events: none;
+}
+body.pe-img-dragging,
+body.pe-img-dragging * {
+  cursor: grabbing !important;
+}
+body.pe-img-dragging .toastui-editor-contents img {
+  opacity: 0.92;
+}
+
+
+.pe-img-drag-ghost {
+  position: fixed;
+  z-index: 80;
+  width: 72px;
+  height: 96px;
   object-fit: cover;
-  object-position: center;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  opacity: 0.88;
+  pointer-events: none;
+  border: 2px solid var(--wp--preset--color--accent, #0b6b72);
 }
-.toastui-editor-contents .pe-image-row.cols-2 img {
-  height: 260px !important;
+.pe-drop-hint {
+  width: 6px !important;
+  background: #0b6b72 !important;
 }
-.toastui-editor-contents .pe-image-row.cols-3 img {
-  height: 200px !important;
+
+
+#editorMount.pe-file-drop {
+  outline: 2px dashed var(--wp--preset--color--accent, #0b6b72);
+  outline-offset: -8px;
+  background: rgba(11, 107, 114, 0.06);
 }

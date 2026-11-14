@@ -9,7 +9,7 @@ Python 3 표준 라이브러리만으로 동작합니다(설치할 패키지 없
 ## 특징
 
 - **Markdown이 원본** — `drafts/<topic>/<slug>/post.md` + `images/`. 에디터는 저장할 때만 파일을 씁니다.
-- **WYSIWYG 한 창** (Toast UI Editor) — 표 병합, 정렬, 문단 위 여백, 이미지 폭/회전/가로 묶기.
+- **WYSIWYG 한 창** (Toast UI Editor) — 표 병합, 정렬, 문단 위 여백, 이미지 폭/회전/가로 묶기(드래그·파일 드롭, `<!-- image-row:2|3 -->`, 원본 비율).
 - **사진 편집** — 크롭·필터·스티커·모자이크 (TOAST UI Image Editor). 저장 시 EXIF(GPS) 제거(Pillow 설치 시).
 - **WordPress 발행** — 내장 REST 발행기(로컬 이미지 자동 업로드, 카테고리·태그·대표 이미지) 또는 외부 명령 훅.
 - **로컬 전용 보안** — 루프백 바인드 + Host allowlist + Origin 검사 + 세션 CSRF 토큰.

@@ -56,7 +56,7 @@
     <button type="button" class="btn" data-feat="1" title="이 이미지를 대표 썸네일로">대표</button>
     <span class="sep"></span>
     <button type="button" class="btn" data-edit="1" title="사진 편집 (크롭·필터·스티커·모자이크)">편집</button>
-    <button type="button" class="btn" data-row="1" title="연속 사진 2~3장 가로 묶기">가로묶기</button>
+    <button type="button" class="btn" data-row="1" title="위아래 연속 사진 가로로 · 또는 사진을 다른 사진 옆으로 드래그">↔ 가로묶기</button>
     <button type="button" class="btn" data-move="up" title="위로 이동">↑</button>
     <button type="button" class="btn" data-move="down" title="아래로 이동">↓</button>
     <span class="sep"></span>
@@ -177,6 +177,7 @@
       (p) => p && !String(p).startsWith(DRAFTS_PREFIX)
     );
     csrfToken = cfg.csrf_token || "";
+    window.__PE_CSRF = csrfToken;
     FEATURES = Object.assign({ tistory_summary: false, tistory_skip_topics: [] }, cfg.features || {});
     CATEGORY_OPTIONS = Array.isArray(cfg.categories) ? cfg.categories : [];
     const derived = {};
@@ -193,6 +194,7 @@
     document.body.classList.toggle("no-tistory", !FEATURES.tistory_summary);
   }
 
+
   const imgFrame = document.createElement("div");
   imgFrame.className = "img-frame";
   imgFrame.innerHTML = `
@@ -204,6 +206,13 @@
     <div class="img-handle img-handle-e" data-handle="e" title="가로 드래그"></div>
   `;
   document.body.appendChild(imgFrame);
+
+  const imgDropHint = document.createElement("div");
+  imgDropHint.className = "pe-drop-hint";
+  imgDropHint.hidden = true;
+  document.body.appendChild(imgDropHint);
+  let imgDrag = null; // { srcImg, startX, startY, active, targetImg, place }
+
 
   function setStatus(msg, kind) {
     statusEl.textContent = msg || "";
@@ -397,8 +406,64 @@
     const withMedia = body.replace(/!\[([^\]]*)\]\((?!https?:|data:|\/)([^)]+)\)/g, (_, alt, src) => {
       return `![${alt}](${mdSrcToMediaUrl(src, path)})`;
     });
-    // Toast는 caption JSON 주석을 본문으로 보여 줌 → 주석만 숨기고 *캡션*은 유지
-    return captionsForEditor(withMedia);
+    // image-row 는 표로 넣지 않음. 주석만 숨기고, 배치는 decorate(클래스)로 처리
+    return stripImageRowComments(captionsForEditor(withMedia));
+  }
+
+  /** 하위 호환: 예전에 표로 저장된 가로묶기 → image-row 주석+이미지 */
+    /** 저장 시: 이미지만 있는 2~3열 표 → <!-- image-row:N --> + 이미지 줄 */
+  function editorTablesToImageRows(md) {
+    const lines = String(md || "").split("\n");
+    const out = [];
+    let i = 0;
+    const cellImg = function (cell) {
+      const t = String(cell || "").trim();
+      let cm = t.match(/^(!\[[^\]]*\]\([^)]+\))$/);
+      if (!cm) cm = t.match(/^(\[!\[[^\]]*\]\([^)]+\)\]\([^)]+\))$/);
+      return cm ? cm[1] : null;
+    };
+    const isSep = function (line) {
+      return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || "").trim());
+    };
+    while (i < lines.length) {
+      if (!_looksLikeTableRow(lines[i])) {
+        out.push(lines[i]);
+        i += 1;
+        continue;
+      }
+      const block = [];
+      while (i < lines.length && (_looksLikeTableRow(lines[i]) || isSep(lines[i]))) {
+        block.push(lines[i]);
+        i += 1;
+      }
+      const rows = [];
+      for (let bi = 0; bi < block.length; bi++) {
+        const bl = block[bi];
+        if (isSep(bl)) continue;
+        const raw = bl.trim().replace(/^\|/, "").replace(/\|$/, "");
+        rows.push(raw.split("|").map(function (c) { return c.trim(); }));
+      }
+      let imgs = null;
+      for (let ri = 0; ri < rows.length; ri++) {
+        const cells = rows[ri];
+        if (cells.length < 2 || cells.length > 3) continue;
+        const parsed = cells.map(cellImg);
+        if (parsed.length && parsed.every(Boolean)) {
+          imgs = parsed;
+          break;
+        }
+      }
+      if (imgs) {
+        if (out.length && out[out.length - 1].trim() !== "") out.push("");
+        out.push("<!-- image-row:" + imgs.length + " -->");
+        out.push("");
+        out.push.apply(out, imgs);
+        out.push("");
+        continue;
+      }
+      out.push.apply(out, block);
+    }
+    return out.join("\n");
   }
 
   /** Toast WYSIWYG 불필요 이스케이프: 1\. → 1. , \( → ( , \~ → ~ (코드펜스 제외) */
@@ -652,11 +717,10 @@
       new RegExp("!\\[([^\\]]*)\\]\\(" + escDraft + "([^)]+)\\)", "g"),
       (_, alt, rest) => `![${alt}](${mediaUrlToMdSrc(draftPrefix + rest, path)})`
     );
-    // 2) workspace 루트 공용 미디어 (설정 media_allow 중 drafts 외 접두)
+    // 2) writer 루트 미디어 (/media/agent/...)
     out = out.replace(
-      /!\[([^\]]*)\]\(\/media\/([^)]+)\)/g,
-      (whole, alt, rest) => {
-        if (!isSharedMedia(rest)) return whole;
+      /!\[([^\]]*)\]\(\/media\/(agent\/style\/assets\/[^)]+)\)/g,
+      (_, alt, rest) => {
         const meta = parseSrcMeta(rest);
         let src = meta.file;
         if (meta.w !== 100) src += `#w=${meta.w}`;
@@ -1461,6 +1525,7 @@
   function fullMarkdown() {
     if (!editor || !currentPath) return savedFull;
     let body = bodyFromEditor(editor.getMarkdown(), currentPath);
+    body = editorTablesToImageRows(body);
     body = applyDomWidthsToMd(body, currentPath);
     body = applyDomGapsToMd(body);
     body = applyDomTableAlignToMd(body);
@@ -1600,9 +1665,7 @@
       folder;
     const ok = confirm(
       `「${titleHint}」를 완전 삭제할까요?\n\n` +
-        `삭제 대상:\n- ${folder}/post.md\n` +
-        (FEATURES.tistory_summary ? `- ${folder}/tistory-summary.md\n` : "") +
-        `- ${folder}/images/ (있으면)\n\n` +
+        `삭제 대상:\n- ${folder}/post.md\n- ${folder}/tistory-summary.md\n- ${folder}/images/ (있으면)\n\n` +
         `디스크에서 폴더 전체가 지워지며 되돌릴 수 없습니다.`
     );
     if (!ok) return;
@@ -2060,71 +2123,123 @@
     let clean = stripImageRowComments(md);
     const root = wwContentsRoot();
     if (!root) return clean;
-    const rows = [...root.querySelectorAll(".pe-image-row")];
-    if (!rows.length) return clean;
-
-    // Build plan: for each image-row, count images in order of appearance in body
-    const plan = [];
-    const allImgs = [...root.querySelectorAll("img")].filter(
-      (img) => !img.classList.contains("ProseMirror-separator")
-    );
-    let imgIdx = 0;
-    const lineImgs = [];
-    // Map consecutive image lines in md to DOM order via sequential walk
-    const lines = clean.split("\n");
-    const out = [];
+    // pe-ir-item 연속 그룹 → image-row 주석
+    const blocks = [...root.children];
+    const flags = blocks.map((el) => {
+      if (el.tagName !== "P") return 0;
+      const m = /pe-ir-cols-([23])/.exec(el.className || "");
+      if (!m) return 0;
+      const imgs = [...el.querySelectorAll("img")].filter(isContentImg);
+      return imgs.length === 1 ? parseInt(m[1], 10) : 0;
+    });
+    // Build set of md files that belong to rows
+    const rowFiles = [];
     let i = 0;
-    while (i < lines.length) {
-      const s = lines[i].trim();
-      if (_looksLikeImageOnlyLine(s)) {
-        const run = [];
-        while (i < lines.length && _looksLikeImageOnlyLine(lines[i].trim())) {
-          run.push(lines[i]);
-          i += 1;
-        }
-        // Check if these imgs sit inside a pe-image-row in DOM
-        const startImg = allImgs[imgIdx];
-        const row = startImg && startImg.closest && startImg.closest(".pe-image-row");
-        const n = run.length;
-        if (row && n >= 2 && n <= 3) {
-          if (out.length && out[out.length - 1].trim() !== "") out.push("");
-          out.push(`<!-- image-row:${n} -->`);
-          out.push("");
-        }
-        out.push(...run);
-        imgIdx += n;
+    while (i < flags.length) {
+      if (!flags[i]) {
+        i += 1;
         continue;
       }
-      // skip empty / comments don't consume imgs
-      out.push(lines[i]);
-      i += 1;
+      const cols = flags[i];
+      const group = [];
+      while (i < flags.length && flags[i] === cols && group.length < cols) {
+        const img = blocks[i].querySelector("img");
+        if (img && isContentImg(img)) {
+          const f = img.dataset.mdFile || (img.getAttribute("src") || "").split("/").pop().split("#")[0];
+          group.push(f);
+        }
+        i += 1;
+      }
+      if (group.length >= 2) rowFiles.push(group);
+    }
+    if (!rowFiles.length) return clean;
+
+    const lines = clean.split("\n");
+    const out = [];
+    let li = 0;
+    let gi = 0;
+    while (li < lines.length) {
+      const s = lines[li].trim();
+      if (_looksLikeImageOnlyLine(s)) {
+        const run = [];
+        while (li < lines.length && _looksLikeImageOnlyLine(lines[li].trim())) {
+          run.push(lines[li]);
+          li += 1;
+        }
+        const files = run.map((ln) => {
+          const mm = ln.trim().match(/!\[[^\]]*\]\(([^)]+)\)/);
+          if (!mm) return "";
+          return mm[1].split("#")[0].split("?")[0].replace(/^\.\//, "");
+        });
+        const base = (f) => f.split("/").pop();
+        let matched = null;
+        if (gi < rowFiles.length) {
+          const want = rowFiles[gi];
+          if (
+            files.length === want.length &&
+            files.every((f, idx) => {
+              const w = want[idx];
+              return f === w || base(f) === base(w) || f.endsWith("/" + base(w));
+            })
+          ) {
+            matched = want.length;
+            gi += 1;
+          }
+        }
+        if (matched) {
+          if (out.length && out[out.length - 1].trim() !== "") out.push("");
+          out.push("<!-- image-row:" + matched + " -->");
+          out.push("");
+        }
+        out.push.apply(out, run);
+        continue;
+      }
+      out.push(lines[li]);
+      li += 1;
     }
     return out.join("\n");
   }
 
-  function parseImageRowPlan(body) {
+    function parseImageRowPlan(body) {
     const plan = [];
     const lines = String(body || "").split("\n");
     let pending = 0;
     let i = 0;
+    let imgOrdinal = 0;
     while (i < lines.length) {
       const s = lines[i].trim();
-      const m = /^<!--\s*image-row:([23])\s*-->$/.exec(s);
-      if (m) {
-        pending = parseInt(m[1], 10);
+      const rowM = /^<!--\s*image-row:([23])\s*-->$/.exec(s);
+      if (rowM) {
+        pending = parseInt(rowM[1], 10);
         i += 1;
         continue;
       }
-      if (_looksLikeImageOnlyLine(s)) {
+      if (pending && _looksLikeImageOnlyLine(s)) {
         const run = [];
-        while (i < lines.length && _looksLikeImageOnlyLine(lines[i].trim())) {
-          run.push(i);
-          i += 1;
+        const startOrd = imgOrdinal;
+        while (i < lines.length && run.length < pending) {
+          const t = lines[i].trim();
+          if (!t) {
+            i += 1;
+            continue;
+          }
+          if (_looksLikeImageOnlyLine(t)) {
+            run.push(i);
+            imgOrdinal += 1;
+            i += 1;
+            continue;
+          }
+          break;
         }
-        if (pending && run.length === pending) {
-          plan.push({ count: pending, startImgOrdinal: plan.reduce((a, p) => a + p.count, 0) });
+        if (run.length === pending) {
+          plan.push({ count: pending, startImgOrdinal: startOrd });
         }
         pending = 0;
+        continue;
+      }
+      if (_looksLikeImageOnlyLine(s)) {
+        imgOrdinal += 1;
+        i += 1;
         continue;
       }
       if (s && !s.startsWith("<!--")) pending = 0;
@@ -2136,83 +2251,352 @@
   function decorateImageRowsFromBody(body) {
     const root = wwContentsRoot();
     if (!root) return;
-    // unwrap previous
-    root.querySelectorAll(".pe-image-row").forEach((row) => {
+    // 예전 div / 표 가로묶기 해제 → 일반 문단으로
+    unwrapImageRowTables(root);
+    root.querySelectorAll("div.pe-image-row").forEach((row) => {
       const parent = row.parentNode;
       while (row.firstChild) parent.insertBefore(row.firstChild, row);
       row.remove();
     });
-    const plan = parseImageRowPlan(body || lastBodyForGaps);
-    if (!plan.length) return;
-    const paras = [...root.children].filter((el) => {
-      if (el.tagName !== "P") return false;
-      const imgs = [...el.querySelectorAll("img")].filter(
-        (img) => !img.classList.contains("ProseMirror-separator")
-      );
-      return imgs.length === 1 && el.textContent.trim() === (imgs[0].alt || "") || imgs.length === 1;
+    [...root.children].forEach((el) => {
+      const t = (el.textContent || "").trim();
+      if (/^<!--\s*image-row:[23]\s*-->$/.test(t)) el.remove();
     });
-    // simpler: consecutive p that each contain exactly one content img
-    const blocks = [...root.children];
-    const imgParas = [];
-    for (const el of blocks) {
-      if (el.tagName !== "P") {
-        imgParas.push(null);
+    clearAllImageRowClasses(root);
+    const groups = parseImageRowImageGroups(body || lastBodyForGaps);
+    groups.forEach((files) => applyImageRowClassesByFiles(files));
+  }
+
+  function unwrapImageRowTables(root) {
+    [...root.querySelectorAll("table")].forEach((table) => {
+      const imgs = [...table.querySelectorAll("img")].filter(isContentImg);
+      if (imgs.length < 2 || imgs.length > 3) return;
+      // 이미지만 있는 표만 해제
+      const tds = [...table.querySelectorAll("td, th")];
+      const imgCells = tds.filter((td) => [...td.querySelectorAll("img")].some(isContentImg));
+      if (imgCells.length < 2) return;
+      const foreign = tds.some((td) => {
+        const img = [...td.querySelectorAll("img")].find(isContentImg);
+        const t = (td.textContent || "").replace(/\u200b/g, "").trim();
+        if (!img) return !!t;
+        return t && t !== (img.alt || "");
+      });
+      if (foreign) return;
+      const parent = table.parentNode;
+      const paras = imgs.map((img) => {
+        const p = document.createElement("p");
+        p.appendChild(img.cloneNode(true));
+        return p;
+      });
+      paras.forEach((p) => parent.insertBefore(p, table));
+      table.remove();
+    });
+  }
+
+  function clearAllImageRowClasses(root) {
+    root.querySelectorAll("p.pe-ir-item, p[class*='pe-ir-cols-']").forEach((p) => {
+      p.classList.remove("pe-ir-item", "pe-ir-cols-2", "pe-ir-cols-3");
+    });
+    // PM attrs 도 가능하면 정리
+    const view = getWwView();
+    if (!view) return;
+    let tr = view.state.tr;
+    let changed = false;
+    view.state.doc.forEach((node, pos) => {
+      if (node.type.name !== "paragraph") return;
+      const cls = node.attrs.classNames || [];
+      if (!cls.some((c) => /^pe-ir-/.test(c))) return;
+      const next = attrsWithImageRow(node.attrs, 0);
+      tr = tr.setNodeMarkup(pos, null, next);
+      changed = true;
+    });
+    if (changed) {
+      const prev = suppressChange;
+      suppressChange = true;
+      view.dispatch(tr);
+      suppressChange = prev;
+    }
+  }
+
+  function attrsWithImageRow(attrs, cols) {
+    const next = Object.assign({}, attrs || {});
+    const classNames = (next.classNames || []).filter((c) => !/^pe-ir-/.test(c));
+    if (cols === 2 || cols === 3) {
+      classNames.push("pe-ir-item", "pe-ir-cols-" + cols);
+    }
+    next.classNames = classNames.length ? classNames : null;
+    return next;
+  }
+
+  function applyImageRowClassesByFiles(files) {
+    const root = wwContentsRoot();
+    const view = getWwView();
+    if (!root || !files || files.length < 2) return;
+    const cols = files.length;
+    const paras = files.map((f) => {
+      const base = f.split("/").pop();
+      const img = [...root.querySelectorAll("img")].find((el) => {
+        if (!isContentImg(el)) return false;
+        const src = (el.getAttribute("src") || "").split("#")[0];
+        const md = el.dataset.mdFile || "";
+        return src.endsWith("/" + base) || src.endsWith(base) || md.endsWith(base) || md === f;
+      });
+      return img ? img.closest("p") : null;
+    });
+    if (paras.some((p) => !p)) return;
+
+    // 문단이 서로 떨어져 있으면 insertHTML 로 한곳에 모음(표 아님)
+    const kids = [...root.children];
+    const idxs = paras.map((p) => kids.indexOf(p));
+    const consecutive =
+      idxs.every((n) => n >= 0) &&
+      Math.max.apply(null, idxs) - Math.min.apply(null, idxs) === cols - 1 &&
+      idxs.slice().sort((a, b) => a - b).every((n, i, arr) => i === 0 || n === arr[i - 1] + 1);
+
+    if (!consecutive) {
+      insertImageRowFromImgs(
+        paras.map((p) => p.querySelector("img")).filter(isContentImg)
+      );
+      return;
+    }
+
+    if (view) {
+      let tr = view.state.tr;
+      let changed = false;
+      paras.forEach((p) => {
+        try {
+          const pos = view.posAtDOM(p, 0);
+          const $pos = view.state.doc.resolve(pos);
+          let depth = $pos.depth;
+          while (depth > 0 && $pos.node(depth).type.name !== "paragraph") depth -= 1;
+          if (depth <= 0) return;
+          const node = $pos.node(depth);
+          const before = $pos.before(depth);
+          const next = attrsWithImageRow(node.attrs, cols);
+          tr = tr.setNodeMarkup(before, null, next);
+          changed = true;
+        } catch (_) {}
+      });
+      if (changed) {
+        const prev = suppressChange;
+        suppressChange = true;
+        view.dispatch(tr);
+        suppressChange = prev;
+      }
+    }
+    // DOM 클래스도 즉시 반영(트랜잭션 전/후 보강)
+    paras.forEach((p) => {
+      p.classList.add("pe-ir-item", "pe-ir-cols-" + cols);
+    });
+  }
+
+    function parseImageRowImageGroups(body) {
+    const lines = String(body || "").split("\n");
+    const groups = [];
+    let pending = 0;
+    let i = 0;
+    while (i < lines.length) {
+      const s = lines[i].trim();
+      const rowM = /^<!--\s*image-row:([23])\s*-->$/.exec(s);
+      if (rowM) {
+        pending = parseInt(rowM[1], 10);
+        i += 1;
         continue;
       }
-      const imgs = [...el.querySelectorAll(":scope > img, :scope img")].filter(
-        (img) => !img.classList.contains("ProseMirror-separator")
-      );
-      // allow only image (+ optional br)
-      const meaningful = [...el.childNodes].filter((n) => {
-        if (n.nodeType === 3) return n.textContent.trim().length > 0;
-        if (n.nodeType === 1) {
-          const t = n.tagName;
-          if (t === "BR") return false;
-          if (t === "IMG") return true;
-          if (t === "EM" || t === "I") return false; // caption italic after may be sibling p
-          return true;
-        }
-        return false;
-      });
-      const onlyImg =
-        imgs.length === 1 &&
-        meaningful.every((n) => n.nodeType === 1 && n.tagName === "IMG");
-      imgParas.push(onlyImg ? el : null);
-    }
-    // Walk plan greedily over consecutive img paras
-    let pi = 0;
-    for (const item of plan) {
-      const need = item.count;
-      while (pi < imgParas.length) {
-        // find run of need consecutive non-null
-        if (!imgParas[pi]) {
-          pi += 1;
-          continue;
-        }
-        let ok = true;
-        const group = [];
-        for (let k = 0; k < need; k++) {
-          if (!imgParas[pi + k]) {
-            ok = false;
-            break;
+      if (pending && _looksLikeImageOnlyLine(s)) {
+        const files = [];
+        while (i < lines.length && files.length < pending) {
+          const t = lines[i].trim();
+          if (!t) {
+            i += 1;
+            continue;
           }
-          group.push(imgParas[pi + k]);
+          if (_looksLikeImageOnlyLine(t)) {
+            const mm = t.match(/!\[[^\]]*\]\(([^)]+)\)/);
+            if (mm) files.push(mm[1].split("#")[0].split("?")[0].replace(/^\.\//, ""));
+            i += 1;
+            continue;
+          }
+          break;
         }
-        if (!ok) {
-          pi += 1;
-          continue;
-        }
-        const wrap = document.createElement("div");
-        wrap.className = `pe-image-row cols-${need}`;
-        wrap.setAttribute("data-image-row", String(need));
-        group[0].parentNode.insertBefore(wrap, group[0]);
-        group.forEach((p) => wrap.appendChild(p));
-        // mark consumed
-        for (let k = 0; k < need; k++) imgParas[pi + k] = null;
-        pi += need;
-        break;
+        if (files.length === pending) groups.push(files);
+        pending = 0;
+        continue;
+      }
+      if (s && !s.startsWith("<!--")) pending = 0;
+      i += 1;
+    }
+    return groups;
+  }
+
+  function isContentImg(img) {
+    return !!(
+      img &&
+      img.tagName === "IMG" &&
+      !img.classList.contains("ProseMirror-separator")
+    );
+  }
+
+  function syncImageRowBody() {
+    try {
+      if (editor && currentPath) {
+        let body = bodyFromEditor(editor.getMarkdown(), currentPath);
+        body = editorTablesToImageRows(body);
+        body = applyDomImageRowsToMd(body);
+        lastBodyForGaps = body;
+      }
+    } catch (_) {}
+  }
+
+  function detachImgPara(img) {
+    let p = img.closest("p");
+    if (!p) {
+      p = document.createElement("p");
+      if (img.parentNode) {
+        img.parentNode.insertBefore(p, img);
+        p.appendChild(img);
       }
     }
+    const row = p.closest(".pe-image-row");
+    if (row) {
+      row.parentNode.insertBefore(p, row);
+      const left = [...row.querySelectorAll("img")].filter(isContentImg);
+      if (left.length < 2) {
+        while (row.firstChild) row.parentNode.insertBefore(row.firstChild, row);
+        row.remove();
+      } else {
+        row.className = `pe-image-row cols-${left.length}`;
+        row.setAttribute("data-image-row", String(left.length));
+      }
+    }
+    return p;
+  }
+
+  function buildImageRowParasHtml(imgs) {
+    const cols = imgs.length;
+    return imgs
+      .map((img) => {
+        const src = img.getAttribute("src") || "";
+        const alt = (img.getAttribute("alt") || "").replace(/"/g, "&quot;");
+        return (
+          '<p class="pe-ir-item pe-ir-cols-' +
+          cols +
+          '"><img src="' +
+          src +
+          '" alt="' +
+          alt +
+          '"></p>'
+        );
+      })
+      .join("");
+  }
+
+  function insertImageRowFromImgs(imgs) {
+    if (!imgs || imgs.length < 2) return false;
+    const root = wwContentsRoot();
+    if (!root) return false;
+    const blocks = imgs.map((img) => {
+      const row = img.closest("table");
+      if (row && root.contains(row)) return row;
+      return img.closest("p") || img.parentElement;
+    });
+    const first = blocks[0];
+    const last = blocks[blocks.length - 1];
+    if (!first || !last || !root.contains(first) || !root.contains(last)) return false;
+    try {
+      const range = document.createRange();
+      range.setStartBefore(first);
+      range.setEndAfter(last);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const ok = document.execCommand(
+        "insertHTML",
+        false,
+        buildImageRowParasHtml(imgs)
+      );
+      if (ok) {
+        setTimeout(function () {
+          const root2 = wwContentsRoot();
+          if (root2) unwrapImageRowTables(root2);
+          const files = imgs.map((img) => {
+            return (
+              img.dataset.mdFile ||
+              (img.getAttribute("src") || "").split("/").pop().split("#")[0]
+            );
+          });
+          applyImageRowClassesByFiles(files);
+          // Toast가 표 UI를 남기면 다시 문단으로
+          if (root2) unwrapImageRowTables(root2);
+          applyImageRowClassesByFiles(files);
+        }, 60);
+      }
+      return !!ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function decorateImageRowTables() {
+    // 하위 호환 이름 · 표는 더 이상 쓰지 않음
+    const root = wwContentsRoot();
+    if (!root) return;
+    unwrapImageRowTables(root);
+  }
+
+    /** 앵커 사진 왼쪽/오른쪽에 moving을 붙여 2~3열 image-row 생성 */
+  function mergeImagesIntoRow(anchorImg, movingImg, place) {
+    if (!isContentImg(anchorImg) || !isContentImg(movingImg) || anchorImg === movingImg) {
+      return;
+    }
+    const root = wwContentsRoot();
+    if (!root || !root.contains(anchorImg) || !root.contains(movingImg)) return;
+
+    const anchorRow = anchorImg.closest("p.pe-ir-item");
+    let imgs = [];
+    if (anchorRow) {
+      const cols = parseInt((/pe-ir-cols-([23])/.exec(anchorRow.className) || [])[1] || "0", 10);
+      // 같은 가로묶기 문단들 수집
+      const root = wwContentsRoot();
+      const kids = [...root.children];
+      const idx = kids.indexOf(anchorRow);
+      let start = idx;
+      let end = idx;
+      while (start > 0 && kids[start - 1].classList && kids[start - 1].classList.contains("pe-ir-item")) start -= 1;
+      while (end + 1 < kids.length && kids[end + 1].classList && kids[end + 1].classList.contains("pe-ir-item")) end += 1;
+      imgs = kids
+        .slice(start, end + 1)
+        .map((p) => p.querySelector("img"))
+        .filter(isContentImg);
+      if (cols && imgs.length > cols) imgs = imgs.slice(0, cols);
+    } else {
+      imgs = [anchorImg];
+    }
+    imgs = imgs.filter((i) => i !== movingImg);
+    if (imgs.length >= 3) {
+      setStatus("가로묶기는 최대 3장입니다", "dirty");
+      return;
+    }
+    const aidx = Math.max(0, imgs.indexOf(anchorImg));
+    const insertAt = place === "before" ? aidx : aidx + 1;
+    imgs.splice(insertAt, 0, movingImg);
+    imgs = imgs.slice(0, 3);
+    if (imgs.length < 2) return;
+
+    if (!insertImageRowFromImgs(imgs)) {
+      setStatus("가로묶기 실패 · 다시 드래그해 보세요", "dirty");
+      return;
+    }
+    syncImageRowBody();
+    markDirty();
+    hideImgToolbar();
+    setTimeout(function () {
+      const root2 = wwContentsRoot();
+      const src = movingImg.getAttribute("src");
+      const hit = root2 && [...root2.querySelectorAll("img")].find((i) => i.getAttribute("src") === src);
+      if (hit) showImgToolbar(hit);
+    }, 50);
+    setStatus("가로묶기 " + imgs.length + "장 · 드래그로 붙임 · 저장 시 md 반영", "dirty");
   }
 
   function wrapSelectedImagesAsRow() {
@@ -2221,51 +2605,155 @@
     if (!p) return;
     const root = wwContentsRoot();
     if (!root || !root.contains(p)) return;
-    // collect adjacent image-only paragraphs including p
+    if (selectedImg.closest("p.pe-ir-item")) {
+      setStatus("이미 가로묶기된 사진입니다", "ok");
+      return;
+    }
     const kids = [...root.children];
-    const idx = kids.indexOf(p);
-    if (idx < 0) return;
-    const isImgPara = (el) => {
-      if (!el || el.tagName !== "P") return false;
-      const imgs = [...el.querySelectorAll("img")].filter(
-        (img) => !img.classList.contains("ProseMirror-separator")
-      );
+    let baseIdx = kids.indexOf(p);
+    if (baseIdx < 0) {
+      const row = p.closest("p.pe-ir-item, .pe-image-row");
+      baseIdx = row ? kids.indexOf(row) : -1;
+    }
+    if (baseIdx < 0) return;
+    const isImgPara = function (el) {
+      if (!el) return false;
+      if (el.classList && el.classList.contains("pe-image-row")) return false;
+      if (el.tagName === "TABLE") return false;
+      if (el.tagName !== "P") return false;
+      const imgs = [...el.querySelectorAll("img")].filter(isContentImg);
       if (imgs.length !== 1) return false;
       const text = el.textContent.replace(imgs[0].alt || "", "").trim();
       return text === "";
     };
-    let start = idx;
-    let end = idx;
-    while (start > 0 && isImgPara(kids[start - 1])) start -= 1;
-    while (end + 1 < kids.length && isImgPara(kids[end + 1])) end += 1;
+    const isEmptyPara = function (el) {
+      return !!(
+        el &&
+        el.tagName === "P" &&
+        !el.querySelector("img") &&
+        !(el.textContent || "").trim()
+      );
+    };
+    let start = baseIdx;
+    let end = baseIdx;
+    while (start > 0) {
+      const prev = kids[start - 1];
+      if (isImgPara(prev) || isEmptyPara(prev)) start -= 1;
+      else break;
+    }
+    while (end + 1 < kids.length) {
+      const next = kids[end + 1];
+      if (isImgPara(next) || isEmptyPara(next)) end += 1;
+      else break;
+    }
     const group = kids.slice(start, end + 1).filter(isImgPara);
     if (group.length < 2) {
-      setStatus("가로묶기는 연속 사진 2~3장 필요", "dirty");
+      setStatus(
+        "가로묶기: 사진을 위아래로 연속 배치한 뒤 누르거나, 다른 사진 옆으로 드래그하세요",
+        "dirty"
+      );
       return;
     }
     const take = group.slice(0, Math.min(3, group.length));
-    // unwrap if already in row
-    take.forEach((el) => {
-      const row = el.closest(".pe-image-row");
-      if (row) {
-        while (row.firstChild) row.parentNode.insertBefore(row.firstChild, row);
-        row.remove();
+    const imgs = take.map((el) => el.querySelector("img")).filter(isContentImg);
+    if (!insertImageRowFromImgs(imgs)) {
+      setStatus("가로묶기 실패 · 사진을 다시 선택한 뒤 눌러 보세요", "dirty");
+      return;
+    }
+    syncImageRowBody();
+    markDirty();
+    setStatus("가로묶기 " + imgs.length + "장 · 저장 시 md에 image-row", "dirty");
+  }
+
+  let imgDragGhost = null;
+
+  function ensureImgDragGhost(img) {
+    if (imgDragGhost) return;
+    const g = document.createElement("img");
+    g.className = "pe-img-drag-ghost";
+    g.src = img.getAttribute("src") || "";
+    g.alt = "";
+    document.body.appendChild(g);
+    imgDragGhost = g;
+  }
+
+  function moveImgDragGhost(x, y) {
+    if (!imgDragGhost) return;
+    imgDragGhost.style.left = Math.round(x + 12) + "px";
+    imgDragGhost.style.top = Math.round(y + 12) + "px";
+  }
+
+  function clearImgDragGhost() {
+    if (imgDragGhost && imgDragGhost.parentNode) imgDragGhost.parentNode.removeChild(imgDragGhost);
+    imgDragGhost = null;
+  }
+
+    function clearImgDropHint() {
+    imgDropHint.hidden = true;
+    if (imgDrag) {
+      imgDrag.targetImg = null;
+      imgDrag.place = null;
+    }
+  }
+
+  function updateImgDropHint(clientX, clientY) {
+    if (!imgDrag || !imgDrag.active) return;
+    const root = wwContentsRoot();
+    if (!root) return;
+    imgDropHint.hidden = true;
+    imgDrag.targetImg = null;
+    imgDrag.place = null;
+    // elementsFromPoint 는 오버레이/고스트에 가려 실패하는 경우가 있어 좌표로 직접 판정
+    let hit = null;
+    let hitRect = null;
+    let best = Infinity;
+    root.querySelectorAll("img").forEach((el) => {
+      if (!isContentImg(el) || el === imgDrag.srcImg) return;
+      // 같은 표 안의 다른 칸은 허용
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8) return;
+      const pad = 12;
+      if (
+        clientX < rect.left - pad ||
+        clientX > rect.right + pad ||
+        clientY < rect.top - pad ||
+        clientY > rect.bottom + pad
+      ) {
+        return;
+      }
+      const cx = (rect.left + rect.right) / 2;
+      const cy = (rect.top + rect.bottom) / 2;
+      const d = Math.hypot(clientX - cx, clientY - cy);
+      if (d < best) {
+        best = d;
+        hit = el;
+        hitRect = rect;
       }
     });
-    const wrap = document.createElement("div");
-    wrap.className = `pe-image-row cols-${take.length}`;
-    wrap.setAttribute("data-image-row", String(take.length));
-    take[0].parentNode.insertBefore(wrap, take[0]);
-    take.forEach((el) => wrap.appendChild(el));
-    try {
-      if (editor && currentPath) {
-        let body = bodyFromEditor(editor.getMarkdown(), currentPath);
-        body = applyDomImageRowsToMd(body);
-        lastBodyForGaps = body;
-      }
-    } catch (_) {}
-    markDirty();
-    setStatus(`가로묶기 ${take.length}장 · 저장 시 md에 image-row`, "dirty");
+    if (!hit || !hitRect) return;
+    const place = clientX < hitRect.left + hitRect.width / 2 ? "before" : "after";
+    const x = place === "before" ? hitRect.left - 3 : hitRect.right - 3;
+    imgDropHint.style.left = Math.max(0, x) + "px";
+    imgDropHint.style.top = hitRect.top + "px";
+    imgDropHint.style.height = hitRect.height + "px";
+    imgDropHint.hidden = false;
+    imgDrag.targetImg = hit;
+    imgDrag.place = place;
+  }
+
+  function endImgDrag(e) {
+    if (!imgDrag) return;
+    const drag = imgDrag;
+    imgDrag = null;
+    document.body.classList.remove("pe-img-dragging");
+    clearImgDropHint();
+    clearImgDragGhost();
+    if (!drag.active) return;
+    if (drag.targetImg && drag.place) {
+      mergeImagesIntoRow(drag.targetImg, drag.srcImg, drag.place);
+    } else {
+      setStatus("실패 · 다른 사진 위(왼쪽/오른쪽)에 놓고 놓으세요. 또는 사진 클릭 → ↔ 가로묶기", "dirty");
+    }
   }
 
   function moveImageBlock(dir) {
@@ -2430,6 +2918,9 @@
     imgToolbar.classList.add("is-open");
     imgFrame.classList.add("is-open");
     positionImgChrome(img);
+    if (!document.body.classList.contains("pe-img-dragging")) {
+      setStatus("↔ 가로묶기 클릭, 또는 사진을 다른 사진 왼쪽/오른쪽으로 드래그", "ok");
+    }
   }
 
   function decorateImage(img, path) {
@@ -2446,8 +2937,8 @@
     // draft 폴더 안 파일명만 있으면 images/ 로
     if (
       !mdFile.startsWith("images/") &&
-      !isSharedMedia(mdFile) &&
-      !mdFile.startsWith(DRAFTS_PREFIX) &&
+      !mdFile.startsWith("agent/") &&
+      !mdFile.startsWith("drafts/") &&
       !mdFile.startsWith("http")
     ) {
       mdFile = `images/${mdFile}`;
@@ -2609,6 +3100,7 @@
     if (!root || root.dataset.imgUi === "1") return;
     root.dataset.imgUi = "1";
     root.addEventListener("click", (e) => {
+      if (document.body.classList.contains("pe-img-dragging")) return;
       const img = e.target.closest("img");
       if (!img || !root.contains(img)) return;
       e.preventDefault();
@@ -2616,7 +3108,49 @@
       decorateImage(img, currentPath);
       showImgToolbar(img);
     });
+    root.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest && e.target.closest(".img-toolbar, .img-frame, .img-handle")) return;
+      const img = e.target.closest("img");
+      if (!img || !root.contains(img) || !isContentImg(img)) return;
+      try {
+        img.setAttribute("draggable", "false");
+      } catch (_) {}
+      e.preventDefault();
+      imgDrag = {
+        srcImg: img,
+        startX: e.clientX,
+        startY: e.clientY,
+        active: false,
+        targetImg: null,
+        place: null,
+      };
+    });
   }
+
+  window.addEventListener(
+    "mousemove",
+    (e) => {
+      if (!imgDrag) return;
+      const dx = e.clientX - imgDrag.startX;
+      const dy = e.clientY - imgDrag.startY;
+      if (!imgDrag.active) {
+        if (Math.hypot(dx, dy) < 6) return;
+        imgDrag.active = true;
+        document.body.classList.add("pe-img-dragging");
+        hideImgToolbar();
+        ensureImgDragGhost(imgDrag.srcImg);
+        setStatus("다른 사진의 왼쪽 또는 오른쪽 위에 놓으세요", "dirty");
+      }
+      moveImgDragGhost(e.clientX, e.clientY);
+      updateImgDropHint(e.clientX, e.clientY);
+    },
+    true
+  );
+  window.addEventListener("mouseup", endImgDrag, true);
+  window.addEventListener("blur", () => {
+    if (imgDrag) endImgDrag({ type: "blur" });
+  });
 
   imgToolbar.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
@@ -2976,6 +3510,7 @@
             setTimeout(() => {
               decorateAllImages();
               bindImageUi();
+              decorateImageRowTables();
               // 셀 타이핑 중에는 표 DOM을 건드리지 않음 (caret 유지)
               if (findTableFromSelection()) {
                 if (selectedTable) positionColResizeHandles(selectedTable);
@@ -3021,11 +3556,7 @@
         d.slug,
         d.topic,
         d.path,
-        !FEATURES.tistory_summary
-          ? ""
-          : d.has_tistory_summary
-            ? "요약 tistory-summary"
-            : "요약없음",
+        d.has_tistory_summary ? "요약 tistory-summary" : "요약없음",
       ]
         .join(" ")
         .toLowerCase();
@@ -3063,21 +3594,13 @@
       btn.querySelector(".t").textContent = d.title || d.slug;
       const catHint = d.wp_category || TOPIC_DEFAULT_WP[d.topic] || "";
       const catLabel = catHint ? categoryLabel(catHint) : "";
-      const sumHint = !FEATURES.tistory_summary
-        ? ""
-        : d.has_tistory_summary
-          ? " · 요약있음"
-          : " · 요약없음";
+      const sumHint = d.has_tistory_summary ? " · 요약있음" : " · 요약없음";
       btn.querySelector(".m").textContent = catLabel
         ? `${catLabel} · ${d.topic}/${d.slug}${sumHint}`
         : `${d.topic}/${d.slug}${sumHint}`;
       btn.addEventListener("click", () => openDraft(d.path));
       li.appendChild(btn);
 
-      if (!FEATURES.tistory_summary) {
-        draftList.appendChild(li);
-        continue;
-      }
       const child = document.createElement("div");
       child.className = "draft-child";
       if (d.has_tistory_summary && d.tistory_summary_path) {
@@ -3262,17 +3785,10 @@
     try {
       if (isDirty()) await saveDraft();
       setStatus(`${mode} 올리는 중… 0s`);
-      // builtin 발행기는 에디터 렌더 HTML을 본문으로 사용 (command 발행기는 무시)
-      let html = null;
-      try {
-        if (editor && typeof editor.getHTML === "function") html = editor.getHTML();
-      } catch (_) {
-        html = null;
-      }
       const res = await fetch("/api/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: currentPath, mode, html }),
+        body: JSON.stringify({ path: currentPath, mode }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -3302,23 +3818,17 @@
       refreshPublishButtons();
       const sec = Math.round((Date.now() - started) / 1000);
       const sumPath = data.tistory_summary_path || "";
-      if (hit && data.has_tistory_summary) {
+      if (hit) {
         hit.has_tistory_summary = true;
         if (sumPath) hit.tistory_summary_path = sumPath;
       }
-      const warn =
-        result.warnings && result.warnings.length
-          ? ` · 경고 ${result.warnings.length}건 (콘솔)`
-          : "";
-      if (warn) console.warn(result.warnings);
       setStatus(
         url
           ? `${st === "publish" ? "P" : "D"} 반영 (${sec}s) · ${url}` +
-              (st === "publish" && FEATURES.tistory_summary && data.has_tistory_summary
+              (st === "publish"
                 ? " · 하위「티스토리 요약」확인 후 티스토리 업로드"
-                : "") +
-              warn
-          : `${st} 반영됨 (${sec}s)${warn}`,
+                : "")
+          : `${st} 반영됨 (${sec}s)`,
         "ok"
       );
       // WP 목록 status 재확인 (배지 최종 · 요약 P 동기)
@@ -3406,6 +3916,8 @@
     fileImage.value = "";
   });
   filterEl.addEventListener("input", renderList);
+  ensureCategoryOptions();
+  ensureNewCategoryOptions();
 
   if (titleInput) {
     titleInput.addEventListener("input", () => {
@@ -3445,14 +3957,52 @@
     }
   });
 
-  async function boot() {
+  (async function boot() {
     const res = await fetch("/api/config");
     if (!res.ok) throw new Error("설정 로드 실패 (/api/config " + res.status + ")");
     applyConfig(await res.json());
-    ensureCategoryOptions();
-    ensureNewCategoryOptions();
     await loadDrafts();
-  }
+  })().catch((e) => setStatus(String(e), "dirty"));
 
-  boot().catch((e) => setStatus(String(e.message || e), "dirty"));
+  // 파일 드래그로 이미지 삽입 (Finder → 본문)
+  (function bindFileDrop() {
+    const mount = editorMount;
+    if (!mount || mount.dataset.fileDrop === "1") return;
+    mount.dataset.fileDrop = "1";
+    const isFileDrag = (e) => {
+      const types = e.dataTransfer && e.dataTransfer.types;
+      if (!types) return false;
+      return [...types].includes("Files");
+    };
+    mount.addEventListener("dragover", (e) => {
+      if (!isFileDrag(e) || !currentPath) return;
+      e.preventDefault();
+      e.stopPropagation();
+      mount.classList.add("pe-file-drop");
+    });
+    mount.addEventListener("dragleave", (e) => {
+      if (!mount.contains(e.relatedTarget)) mount.classList.remove("pe-file-drop");
+    });
+    mount.addEventListener("drop", async (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      mount.classList.remove("pe-file-drop");
+      if (!currentPath || !editor) {
+        setStatus("글을 먼저 여세요", "dirty");
+        return;
+      }
+      const files = [...(e.dataTransfer.files || [])].filter((f) =>
+        /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name)
+      );
+      if (!files.length) {
+        setStatus("이미지 파일만 넣을 수 있습니다", "dirty");
+        return;
+      }
+      setStatus("이미지 업로드 중…");
+      for (const f of files) {
+        await insertImageFromPicker(f);
+      }
+    }, true);
+  })();
 })();
