@@ -695,6 +695,152 @@ body.app {
   cursor: pointer;
 }
 
+/* md ![…](….mp4) → 포스터 img (Toast WW가 video/iframe을 지움) */
+.toastui-editor-contents img.pe-video-poster {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  margin: calc(0.55em * var(--editor-line, 1.8)) auto 0.15em;
+  background: #111;
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+.toastui-editor-contents p.pe-video-p,
+.toastui-editor-contents p:has(> img.pe-video-poster) {
+  position: relative;
+  line-height: 0;
+}
+
+.toastui-editor-contents p:has(> img.pe-video-poster)::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M8 5v14l11-7z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 55% 50%;
+  background-size: 28px 28px;
+}
+
+.toastui-editor-contents p:has(> img.pe-video-poster) + p:has(em) {
+  margin: 0 0 0.85em !important;
+  padding: 0 !important;
+  color: var(--wp--preset--color--ink-mute);
+  font-size: 0.92em;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* 편집기 밖 재생 다이얼로그 */
+.pe-video-dialog {
+  border: 0;
+  padding: 0;
+  max-width: min(960px, 96vw);
+  width: 96vw;
+  background: #111;
+  color: #fff;
+  border-radius: 8px;
+}
+.pe-video-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+}
+.pe-video-dialog-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.85rem 1rem;
+}
+.pe-video-dialog-inner header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.pe-video-dialog-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.pe-video-dialog-inner header strong {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.pe-video-dialog-inner video {
+  display: block;
+  width: 100%;
+  max-height: 75vh;
+  background: #000;
+  border-radius: 4px;
+}
+
+.pe-video-edit-dialog {
+  border: 0;
+  padding: 0;
+  max-width: min(920px, 96vw);
+  width: 96vw;
+  background: #111;
+  color: #fff;
+  border-radius: 8px;
+}
+.pe-video-edit-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+}
+.pe-video-edit-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.75rem 0.85rem 1rem;
+}
+.pe-video-edit-inner header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.pe-video-edit-inner video {
+  width: 100%;
+  max-height: 55vh;
+  background: #000;
+  border-radius: 4px;
+}
+.pe-video-edit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.pe-video-edit-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.pe-video-edit-controls input[type="number"] {
+  width: 5.5rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #1a1a1a;
+  color: #fff;
+}
+.pe-video-edit-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #bbb;
+  min-height: 1.2em;
+}
+
 .toastui-editor-contents img.ProseMirror-separator {
   margin: 0 !important;
   width: 0 !important;

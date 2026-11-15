@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html as html_lib
 import json
 import mimetypes
@@ -249,7 +250,9 @@ def simple_md_to_html(md: str) -> str:
 
 # ── media ──────────────────────────────────────────────────────────────────
 def ensure_media(local: Path, *, prefix: str, base: str, user: str, password: str) -> dict | None:
-    unique = f"{prefix}__{local.name}"
+    raw = local.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()[:10]
+    unique = f"{prefix}__{local.stem}.{digest}{local.suffix}"
     q = urllib.parse.urlencode({"search": Path(unique).stem, "per_page": 20})
     code, data = api_request(base, f"/wp-json/wp/v2/media?{q}", user=user, password=password)
     if code == 200 and isinstance(data, list):
@@ -267,7 +270,7 @@ def ensure_media(local: Path, *, prefix: str, base: str, user: str, password: st
         user=user,
         password=password,
         method="POST",
-        raw_body=local.read_bytes(),
+        raw_body=raw,
         extra_headers={
             "Content-Type": mime,
             "Content-Disposition": f'attachment; filename="{unique}"',

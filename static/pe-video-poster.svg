@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#1a1a1a"/>
+  <circle cx="480" cy="250" r="64" fill="#ffffff" fill-opacity="0.92"/>
+  <polygon points="458,215 458,285 530,250" fill="#111111"/>
+  <text x="480" y="370" text-anchor="middle" fill="#cccccc" font-size="32" font-family="system-ui,sans-serif">재생</text>
+</svg>

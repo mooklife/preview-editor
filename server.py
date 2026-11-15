@@ -40,8 +40,51 @@ WP_ID_RE = re.compile(r'^wp_id:\s*["\']?(\d+)["\']?\s*$', re.M)
 TOPIC_RE = re.compile(r'^topic:\s*["\']?([A-Za-z0-9_-]+)["\']?\s*$', re.M)
 WP_CATEGORY_RE = re.compile(r'^wp_category:\s*["\']?([A-Za-z0-9_-]+)["\']?\s*$', re.M)
 ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ALLOWED_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+ALLOWED_UPLOAD_EXT = ALLOWED_IMG_EXT | ALLOWED_VIDEO_EXT
 SLUG_SAFE_RE = re.compile(r"[^a-z0-9\-]+")
 SUMMARY_NAME = "tistory-summary.md"
+
+
+def ensure_video_frame_poster(video: Path) -> Path | None:
+    """영상에서 썸네일 jpg 생성 → images/.poster-{stem}.jpg (편집기 포스터용)."""
+    if not video.is_file() or video.suffix.lower() not in ALLOWED_VIDEO_EXT:
+        return None
+    poster = video.parent / f".poster-{video.stem}.jpg"
+    try:
+        if poster.is_file() and poster.stat().st_mtime >= video.stat().st_mtime:
+            return poster
+    except OSError:
+        pass
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return poster if poster.is_file() else None
+    tmp = poster.with_suffix(".jpg.tmp")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-ss",
+        "0.3",
+        "-i",
+        str(video),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(tmp),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        return poster if poster.is_file() else None
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 32:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        return poster if poster.is_file() else None
+    tmp.replace(poster)
+    return poster
 
 FAVICON_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
@@ -315,6 +358,17 @@ def draft_topic_of(post: Path) -> str:
         return ""
 
 
+_TISTORY_URL_PLACEHOLDER_RE = re.compile(
+    r"\(WP publish 후 주소 기입\)|"
+    r"\(WP publish 후 자동 기입\)|"
+    r"\(발행 후 기입\)|"
+    r"\(WP 공개 후 URL\)|"
+    r"\(WP 공개 후[^)]*\)|"
+    r"\(발행 후[^)]*\)|"
+    r"\(WP publish[^)]*\)"
+)
+
+
 def tistory_summary_stub(*, title: str, wp_url: str = "") -> str:
     """원글 옆 tistory-summary.md 기본 골격 — 제목형 한 줄 + WP 원문 CTA."""
     title = (title or "").strip() or "(제목)"
@@ -342,15 +396,64 @@ def tistory_summary_stub(*, title: str, wp_url: str = "") -> str:
     )
 
 
+def _sync_tistory_summary_text(text: str, *, title: str, url: str) -> str:
+    """기존 요약 본문의 제목·WP URL 자리표시자/링크를 원글에 맞게 갱신."""
+    updated = text
+    title = (title or "").strip()
+    url = (url or "").strip()
+    if title:
+        updated = re.sub(
+            r"(?m)^# 티스토리 요약 — .*$",
+            f"# 티스토리 요약 — {title}",
+            updated,
+            count=1,
+        )
+        # 마크다운 블록 안 첫 **제목**
+        updated = re.sub(
+            r"(## 마크다운\s*```markdown\s*)\*\*[^*]+\*\*",
+            rf"\1**{title}**",
+            updated,
+            count=1,
+            flags=re.S,
+        )
+        updated = re.sub(
+            r"(## HTML\s*```html\s*<p><strong>)[^<]+(</strong></p>)",
+            rf"\1{title}\2",
+            updated,
+            count=1,
+            flags=re.S,
+        )
+    if url:
+        updated = _TISTORY_URL_PLACEHOLDER_RE.sub(url, updated)
+        if re.search(r"(?m)^- WP:\s*", updated):
+            updated = re.sub(r"(?m)^- WP:\s*.*$", f"- WP: {url}", updated, count=1)
+
+        def _arrow_line(m: re.Match[str]) -> str:
+            body = (m.group(2) or "").strip()
+            if (
+                not body
+                or _TISTORY_URL_PLACEHOLDER_RE.search(body)
+                or body.startswith("http://")
+                or body.startswith("https://")
+            ):
+                return f"{m.group(1)}{url}"
+            return m.group(0)
+
+        updated = re.sub(r"(?m)^(👉\s*)(.*)$", _arrow_line, updated)
+    return updated
+
+
 def ensure_tistory_summary(
     post: Path,
     *,
     title: str | None = None,
     wp_url: str | None = None,
 ) -> Path | None:
-    """post.md 옆에 tistory-summary.md 를 보장. 없으면 스텁 생성, 있으면 WP URL 자리표시자만 보강.
+    """post.md 옆에 tistory-summary.md 를 보장.
 
-    기능이 꺼져 있거나 tistory_skip_topics 에 속하면 신규 생성하지 않는다.
+    - 없으면 스텁 생성
+    - 있으면 원글 제목·WP URL을 요약에 동기화 (퍼블/요약 클릭 시)
+    - 기능이 꺼져 있거나 tistory_skip_topics 에 속하면 신규 생성하지 않는다.
     """
     if not CFG.tistory_summary:
         return None
@@ -368,12 +471,8 @@ def ensure_tistory_summary(
     if not summary.is_file():
         summary.write_text(tistory_summary_stub(title=title, wp_url=url), encoding="utf-8")
         return summary
-    if not url:
-        return summary
     text = summary.read_text(encoding="utf-8")
-    updated = text.replace("(WP publish 후 자동 기입)", url)
-    if re.search(r"(?m)^- WP:\s*$", updated) or re.search(r"(?m)^- WP:\s*\(WP publish", updated):
-        updated = re.sub(r"(?m)^- WP:\s*.*$", f"- WP: {url}", updated, count=1)
+    updated = _sync_tistory_summary_text(text, title=title, url=url)
     if updated != text:
         summary.write_text(updated, encoding="utf-8")
     return summary
@@ -640,8 +739,32 @@ class Handler(BaseHTTPRequestHandler):
         full = resolve_draft_path(rel)
         if not full.is_file():
             return self._send_json({"error": "not found"}, 404)
+        # 티스토리 요약 열 때 원글 제목·WP URL을 요약에 동기화
+        synced = False
+        if CFG.tistory_summary and full.name == SUMMARY_NAME:
+            post = full.parent / "post.md"
+            if post.is_file():
+                post_text = post.read_text(encoding="utf-8")
+                m = re.search(r'^wp_url:\s*["\']?(.*?)["\']?\s*$', post_text, re.M)
+                wp_url = (m.group(1) or "").strip() if m else ""
+                try:
+                    ensure_tistory_summary(
+                        post,
+                        title=parse_title(post_text) or None,
+                        wp_url=wp_url or None,
+                    )
+                    synced = True
+                except OSError:
+                    pass
         text = full.read_text(encoding="utf-8")
-        self._send_json({"path": rel, "content": text, "title": parse_title(text)})
+        self._send_json(
+            {
+                "path": rel,
+                "content": text,
+                "title": parse_title(text),
+                "tistory_synced": synced,
+            }
+        )
 
     def _get_images(self) -> None:
         rel = self._query().get("path", "")
@@ -653,11 +776,16 @@ class Handler(BaseHTTPRequestHandler):
         if images_dir.is_dir():
             draft_rel = rel_to_workspace(post.parent)
             for p in sorted(images_dir.iterdir()):
-                if not p.is_file() or p.suffix.lower() not in ALLOWED_IMG_EXT:
+                if not p.is_file() or p.suffix.lower() not in ALLOWED_UPLOAD_EXT:
                     continue
                 md_path = f"images/{p.name}"
                 items.append(
-                    {"md_path": md_path, "name": p.name, "media_url": f"/media/{draft_rel}/{md_path}"}
+                    {
+                        "md_path": md_path,
+                        "name": p.name,
+                        "media_url": f"/media/{draft_rel}/{md_path}",
+                        "kind": "video" if p.suffix.lower() in ALLOWED_VIDEO_EXT else "image",
+                    }
                 )
         self._send_json({"ok": True, "images": items})
 
@@ -716,6 +844,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/upload": self._upload,
             "/api/image-rotate": self._image_rotate,
             "/api/image-save": self._image_save,
+            "/api/video-trim": self._video_trim,
+            "/api/video-poster": self._video_poster,
             "/api/publish": self._publish,
         }
         fn = routes.get(urllib.parse.urlparse(self.path).path)
@@ -793,7 +923,7 @@ class Handler(BaseHTTPRequestHandler):
         if not filename or not b64:
             raise ValueError("filename and content_base64 required")
         ext = Path(filename).suffix.lower()
-        if ext not in ALLOWED_IMG_EXT:
+        if ext not in ALLOWED_UPLOAD_EXT:
             raise ValueError(f"forbidden extension: {ext}")
         post = resolve_draft_path(rel)
         if post.name not in editable_names():
@@ -806,11 +936,125 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestRejected(413, "file too large")
         images = post.parent / "images"
         images.mkdir(parents=True, exist_ok=True)
-        (images / filename).write_bytes(blob)
+        dest = images / filename
+        if dest.exists():
+            stem, n = dest.stem, 2
+            while True:
+                cand = images / f"{stem}-{n}{dest.suffix}"
+                if not cand.exists():
+                    dest = cand
+                    filename = cand.name
+                    break
+                n += 1
+        dest.write_bytes(blob)
         md_path = f"images/{filename}"
+        out: dict = {
+            "ok": True,
+            "md_path": md_path,
+            "media_url": f"/media/{rel_to_workspace(post.parent)}/{md_path}",
+            "kind": "video" if ext in ALLOWED_VIDEO_EXT else "image",
+        }
+        if ext in ALLOWED_VIDEO_EXT:
+            poster = ensure_video_frame_poster(dest)
+            if poster is not None and poster.is_file():
+                out["poster_md_path"] = f"images/{poster.name}"
+                out["poster_url"] = (
+                    f"/media/{rel_to_workspace(post.parent)}/images/{poster.name}"
+                )
+        self._send_json(out)
+
+    def _video_poster(self) -> None:
+        """영상 프레임 포스터 보장. {poster_url, poster_md_path}."""
+        data = self._read_json()
+        rel = str(data.get("path") or "")
+        md_path = str(data.get("md_path") or "")
+        post = resolve_draft_path(rel)
+        if post.name not in editable_names():
+            raise ValueError("path must be a draft markdown file")
+        clean = md_path.split("#", 1)[0].split("?", 1)[0].lstrip("./")
+        if ".." in clean.split("/") or not clean.startswith("images/"):
+            raise ValueError("md_path must be under images/")
+        full = (post.parent / clean).resolve()
+        if post.parent.resolve() not in full.parents or not full.is_file():
+            raise ValueError("video not found")
+        poster = ensure_video_frame_poster(full)
+        if poster is None or not poster.is_file():
+            raise ValueError("poster generation failed")
         self._send_json(
-            {"ok": True, "md_path": md_path, "media_url": f"/media/{rel_to_workspace(post.parent)}/{md_path}"}
+            {
+                "ok": True,
+                "md_path": clean,
+                "poster_md_path": f"images/{poster.name}",
+                "poster_url": f"/media/{rel_to_workspace(post.parent)}/images/{poster.name}",
+            }
         )
+
+    def _video_trim(self) -> None:
+        """ffmpeg로 영상 앞/뒤 자르기. md_path 원본을 덮어쓴다."""
+        data = self._read_json()
+        rel = str(data.get("path") or "")
+        md_path = str(data.get("md_path") or "")
+        start = float(data.get("start") or 0)
+        end = data.get("end")
+        end_f = float(end) if end is not None and str(end).strip() != "" else None
+        if start < 0:
+            raise ValueError("start must be >= 0")
+        post = resolve_draft_path(rel)
+        if post.name not in editable_names():
+            raise ValueError("path must be a draft markdown file")
+        clean = md_path.split("#", 1)[0].split("?", 1)[0].lstrip("./")
+        if ".." in clean.split("/") or not clean.startswith("images/"):
+            raise ValueError("md_path must be under images/")
+        full = (post.parent / clean).resolve()
+        if post.parent.resolve() not in full.parents or not full.is_file():
+            raise ValueError("video not found")
+        if full.suffix.lower() not in ALLOWED_VIDEO_EXT:
+            raise ValueError("not a video")
+        if end_f is not None and end_f <= start:
+            raise ValueError("end must be > start")
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise ValueError("ffmpeg not found on PATH")
+        tmp = full.with_suffix(full.suffix + ".trimtmp")
+        cmd = [ffmpeg, "-y", "-ss", f"{start:.3f}"]
+        if end_f is not None:
+            cmd += ["-to", f"{end_f:.3f}"]
+        # 재인코딩(키프레임 정확 trim) · 화질 유지 CRF 18
+        cmd += [
+            "-i",
+            str(full),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "18",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(tmp),
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired as e:
+            raise ValueError("ffmpeg timeout") from e
+        if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 64:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+            err = (proc.stderr or proc.stdout or "ffmpeg failed")[-400:]
+            raise ValueError(err)
+        tmp.replace(full)
+        poster = ensure_video_frame_poster(full)
+        out: dict = {
+            "ok": True,
+            "md_path": clean,
+            "media_url": f"/media/{rel_to_workspace(post.parent)}/{clean}",
+        }
+        if poster is not None and poster.is_file():
+            out["poster_md_path"] = f"images/{poster.name}"
+            out["poster_url"] = f"/media/{rel_to_workspace(post.parent)}/images/{poster.name}"
+        self._send_json(out)
 
     def _resolve_draft_image(self, rel: str, md_path: str) -> tuple[Path, Path, str]:
         """draft md path + images/… → (post, image_full, clean_md_path)."""

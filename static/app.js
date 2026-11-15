@@ -1,6 +1,46 @@
 /* Preview Editor — WYSIWYG (Toast UI) → md SSOT */
 
 (() => {
+  // Toast UI 표·인용 선택 버그 (ProseMirror CellSelection / TextSelection)
+  // — 표 셀 드래그·인용 경계에서 콘솔 스팸·스크립트 중단을 막음
+  function isToastSelectionNoise(msg, err) {
+    const s = String(msg || "") + " " + String((err && err.message) || "");
+    return (
+      s.includes("cannot be invoked without 'new'") ||
+      s.includes("TextSelection endpoint not pointing") ||
+      (s.includes("blockQuote") && s.includes("inline content")) ||
+      (s.includes("Class constructor") && s.includes("without 'new'"))
+    );
+  }
+  window.addEventListener(
+    "error",
+    (ev) => {
+      if (isToastSelectionNoise(ev && ev.message, ev && ev.error)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        return true;
+      }
+    },
+    true
+  );
+  window.addEventListener(
+    "unhandledrejection",
+    (ev) => {
+      const reason = ev && ev.reason;
+      const msg =
+        typeof reason === "string"
+          ? reason
+          : reason && reason.message
+            ? reason.message
+            : "";
+      if (isToastSelectionNoise(msg, reason)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+
   // /api/config 로 채움 (부팅 시)
   let csrfToken = "";
   let FEATURES = { tistory_summary: false, tistory_skip_topics: [] };
@@ -24,7 +64,9 @@
   const pathEl = $("currentPath");
   const filterEl = $("filter");
   const fileImage = $("fileImage");
+  const fileVideo = $("fileVideo");
   const editorMount = $("editorMount");
+  let lastVideoLightbox = null; // { mediaUrl, mdFile, label }
   const mdDialog = $("mdDialog");
   const mdSource = $("mdSource");
 
@@ -408,13 +450,274 @@
     return { file: filePart, w };
   }
 
-  /** md 상대 이미지 → 에디터용 /media/... URL (#w= 유지) */
-  function bodyToEditor(body, path) {
-    const withMedia = body.replace(/!\[([^\]]*)\]\((?!https?:|data:|\/)([^)]+)\)/g, (_, alt, src) => {
-      return `![${alt}](${mdSrcToMediaUrl(src, path)})`;
+  const VIDEO_EXT_RE = /\.(mp4|mov|m4v|webm)$/i;
+
+  function isVideoSrc(src) {
+    const file = String(src || "")
+      .split("#")[0]
+      .split("?")[0];
+    return VIDEO_EXT_RE.test(file);
+  }
+
+  function mdFileFromSrc(src) {
+    const meta = parseSrcMeta(String(src || "").replace(/^\.\//, ""));
+    let mdFile = meta.file;
+    if (
+      !mdFile.startsWith("images/") &&
+      !mdFile.startsWith("agent/") &&
+      !mdFile.startsWith("drafts/") &&
+      !mdFile.startsWith("http")
+    ) {
+      mdFile = `images/${mdFile}`;
+    }
+    return mdFile.split("?")[0].split("#")[0];
+  }
+
+  const PE_VIDEO_POSTER = "/static/pe-video-poster.png";
+
+  /** Toast WW는 <video>/<iframe>을 곧 지움. 포스터 img만 유지. */
+  function peSanitizeHtml(html) {
+    return String(html || "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  }
+
+  function PathBasenameNoExt(p) {
+    const name = String(p || "").split("/").pop() || "";
+    return name.replace(/\.[^.]+$/, "");
+  }
+
+  function peVideoAlt(label, mediaUrl, mdFile) {
+    const safe = String(label || "영상").replace(/@@/g, "");
+    return `${safe}@@pe:${mediaUrl}@@${mdFile}@@`;
+  }
+
+  function videoFramePosterUrl(mdFile, path) {
+    // images/foo.mp4 → /media/.../images/.poster-foo.jpg
+    const base = String(mdFile || "").replace(/^images\//, "");
+    const stem = base.replace(/\.[^.]+$/, "");
+    if (!stem) return PE_VIDEO_POSTER;
+    return `${mediaBase(path)}images/.poster-${stem}.jpg`;
+  }
+
+  /** Toast가 유지하는 포스터 이미지 마크다운 (프레임 썸네일 우선) */
+  function videoPosterMarkdown(alt, src, path) {
+    const mediaUrl = mdSrcToMediaUrl(src, path).split("#")[0].split("?")[0];
+    const mdFile = mdFileFromSrc(src);
+    const label = String(alt || "영상");
+    const poster = videoFramePosterUrl(mdFile, path);
+    return `![${peVideoAlt(label, mediaUrl, mdFile)}](${poster})`;
+  }
+
+  function videoHtmlToMarkdown(html, path) {
+    let out = String(html || "");
+    out = out.replace(/<iframe\b[^>]*>\s*<\/iframe>/gi, (block) => {
+      if (!/pe-video-frame|pe-video-player\.html/i.test(block)) return block;
+      const mdM = /\bdata-md-file\s*=\s*"([^"]+)"/i.exec(block);
+      const titleM = /\btitle\s*=\s*"([^"]*)"/i.exec(block);
+      const srcM = /\bsrc\s*=\s*"([^"]+)"/i.exec(block);
+      let mdSrc = mdM ? mdM[1] : "";
+      if (!mdSrc && srcM) {
+        try {
+          const u = new URL(srcM[1], "http://127.0.0.1:3013");
+          mdSrc = u.searchParams.get("md") || "";
+        } catch (_) {}
+      }
+      if (!mdSrc) return "";
+      const alt = (titleM && titleM[1]) || PathBasenameNoExt(mdSrc);
+      return `![${alt}](${mdSrc})`;
     });
-    // image-row 는 표로 넣지 않음. 주석만 숨기고, 배치는 decorate(클래스)로 처리
+    out = out.replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, (block) => {
+      const srcM = /\bsrc\s*=\s*"([^"]+)"/i.exec(block);
+      const titleM = /\btitle\s*=\s*"([^"]*)"/i.exec(block);
+      const mdM = /\bdata-md-file\s*=\s*"([^"]+)"/i.exec(block);
+      let mdSrc = mdM ? mdM[1] : srcM ? mediaUrlToMdSrc(srcM[1], path) : "";
+      mdSrc = String(mdSrc || "")
+        .split("#")[0]
+        .split("?")[0];
+      if (!mdSrc) return "";
+      const alt = (titleM && titleM[1]) || PathBasenameNoExt(mdSrc);
+      return `![${alt}](${mdSrc})`;
+    });
+    return out;
+  }
+
+  /** md 상대 이미지 → 에디터용 /media/... URL. 영상은 포스터 img. */
+  function bodyToEditor(body, path) {
+    const withMedia = body.replace(
+      /!\[([^\]]*)\]\((?!https?:|data:|\/)([^)]+)\)/g,
+      (_, alt, src) => {
+        if (isVideoSrc(src)) return videoPosterMarkdown(alt, src, path);
+        return `![${alt}](${mdSrcToMediaUrl(src, path)})`;
+      }
+    );
     return stripImageRowComments(captionsForEditor(withMedia));
+  }
+
+  function makeVideoPosterImg(mediaUrl, mdFile, alt) {
+    const img = document.createElement("img");
+    const framePoster = videoFramePosterUrl(mdFile, currentPath);
+    img.src = framePoster;
+    img.alt = peVideoAlt(alt || "영상", mediaUrl, mdFile);
+    img.className = "pe-video-poster";
+    img.dataset.mdFile = mdFile;
+    img.dataset.mediaUrl = mediaUrl;
+    img.title = `${alt || PathBasenameNoExt(mdFile)} · 클릭하여 재생`;
+    img.setAttribute(
+      "style",
+      "display:block;width:100%;max-width:100%;height:auto;object-fit:cover;background:#111;cursor:pointer;"
+    );
+    img.addEventListener(
+      "error",
+      () => {
+        // 프레임 없으면 생성 요청 후 폴백
+        if (img.dataset.posterTried === "1") {
+          img.src = PE_VIDEO_POSTER;
+          return;
+        }
+        img.dataset.posterTried = "1";
+        fetch("/api/video-poster", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: currentPath, md_path: mdFile }),
+        })
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && d.poster_url) img.src = d.poster_url + "?t=" + Date.now();
+            else img.src = PE_VIDEO_POSTER;
+          })
+          .catch(() => {
+            img.src = PE_VIDEO_POSTER;
+          });
+      },
+      { once: true }
+    );
+    return img;
+  }
+
+  function hasVideoPosterFor(root, mdFile) {
+    return [...root.querySelectorAll("img.pe-video-poster, img[alt*='@@pe:']")].some((img) => {
+      const pe = parsePeVideoAlt(img.getAttribute("alt") || "");
+      return (img.dataset.mdFile || (pe && pe.mdFile) || "") === mdFile;
+    });
+  }
+
+  /** Toast WW가 mp4를 버린 뒤, 원본 md 기준으로 포스터를 캡션 앞에 삽입 */
+  function injectVideosFromSourceMd(sourceBody) {
+    const root = wwContentsRoot();
+    if (!root || !currentPath || !sourceBody) return;
+    const lines = String(sourceBody).split("\n");
+    const pairs = [];
+    for (let i = 0; i < lines.length; i++) {
+      const im = /^!\[([^\]]*)\]\(([^)]+\.(?:mp4|mov|m4v|webm)[^)]*)\)\s*$/i.exec(
+        lines[i].trim()
+      );
+      if (!im) continue;
+      let caption = null;
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j += 1;
+      if (j < lines.length && parseCaptionJsonLine(lines[j]) != null) {
+        caption = parseCaptionJsonLine(lines[j]);
+        j += 1;
+        while (j < lines.length && !lines[j].trim()) j += 1;
+      } else if (
+        j < lines.length &&
+        /^<!--/.test(lines[j].trim()) &&
+        /"caption"/.test(lines[j])
+      ) {
+        j += 1;
+        while (j < lines.length && !lines[j].trim()) j += 1;
+      }
+      if (j < lines.length && isItalicCaptionLine(lines[j])) {
+        caption = lines[j].trim().slice(1, -1);
+      }
+      pairs.push({ alt: im[1], src: im[2], caption });
+    }
+    pairs.forEach((p) => {
+      const mdFile = mdFileFromSrc(p.src);
+      if (hasVideoPosterFor(root, mdFile)) return;
+      const mediaUrl = mdSrcToMediaUrl(p.src, currentPath).split("#")[0].split("?")[0];
+      const img = makeVideoPosterImg(mediaUrl, mdFile, p.alt);
+      const holder = document.createElement("p");
+      holder.className = "pe-video-p";
+      holder.appendChild(img);
+      let capEl = null;
+      if (p.caption) {
+        const want = p.caption.trim();
+        capEl = [...root.querySelectorAll("p")].find((el) => {
+          const t = (el.textContent || "").trim();
+          return t === want || t.replace(/\s+/g, " ") === want;
+        });
+      }
+      if (capEl && capEl.parentNode) {
+        capEl.parentNode.insertBefore(holder, capEl);
+      } else {
+        root.appendChild(holder);
+      }
+    });
+  }
+
+  function openVideoLightbox(mediaUrl, label, mdFile) {
+    const dlg = document.getElementById("videoDialog");
+    const player = document.getElementById("videoDialogPlayer");
+    const titleEl = document.getElementById("videoDialogTitle");
+    if (!dlg || !player) return;
+    lastVideoLightbox = { mediaUrl, label: label || "영상", mdFile: mdFile || "" };
+    if (titleEl) titleEl.textContent = label || "영상";
+    player.src = mediaUrl;
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+    try {
+      player.play();
+    } catch (_) {}
+  }
+
+  function openVideoEditorFor(opts) {
+    if (!currentPath) return;
+    if (!window.StoryVideoEditor) {
+      setStatus("영상 편집기 스크립트 없음", "dirty");
+      return;
+    }
+    const mediaUrl = opts.mediaUrl;
+    const mdFile = opts.mdFile;
+    const label = opts.label || PathBasenameNoExt(mdFile);
+    closeVideoLightbox();
+    StoryVideoEditor.open({
+      draftPath: currentPath,
+      mdPath: mdFile,
+      mediaUrl,
+      onSaved: () => {
+        markDirty();
+        setStatus("영상 잘림 저장됨 · 미리보기 갱신", "dirty");
+        // 포스터 클릭 URL 캐시 bust
+        decorateAllImages();
+        setTimeout(() => decorateAllImages(), 200);
+      },
+    });
+  }
+
+  function stopVideoLightboxPlayer() {
+    const player = document.getElementById("videoDialogPlayer");
+    if (!player) return;
+    try {
+      player.pause();
+    } catch (_) {}
+    player.removeAttribute("src");
+    try {
+      player.load();
+    } catch (_) {}
+  }
+
+  function closeVideoLightbox() {
+    const dlg = document.getElementById("videoDialog");
+    stopVideoLightboxPlayer();
+    if (dlg && dlg.open) {
+      try {
+        dlg.close();
+      } catch (_) {
+        dlg.removeAttribute("open");
+      }
+    }
   }
 
   /** 하위 호환: 예전에 표로 저장된 가로묶기 → image-row 주석+이미지 */
@@ -719,8 +1022,36 @@
   function bodyFromEditor(body, path) {
     const draftPrefix = mediaBase(path);
     const escDraft = draftPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // 0) <video> HTML → ![…](….mp4)
+    let out = videoHtmlToMarkdown(body, path);
+    // 0b) 포스터 ![label@@pe:url@@mdFile@@](/static/pe-video-poster…) → ![label](mdFile)
+    out = out.replace(
+      /!\[([^\]]*@@pe:([^@]+)@@([^@]+)@@[^\]]*)\]\([^)]+\)/g,
+      (_, fullAlt, _url, mdFile) => {
+        const label = String(fullAlt)
+          .replace(/@@pe:[^@]+@@[^@]+@@/, "")
+          .trim();
+        return `![${label || PathBasenameNoExt(mdFile)}](${mdFile})`;
+      }
+    );
+    // 0c) 구형 {|pe-video:…|} 포스터 (마커 없으면 그대로 둠 → applyDomVideosToMd가 보완)
+    out = out.replace(
+      /!\[([^\]]*)\]\([^)]*pe-video-poster[^)]*\)/g,
+      (whole, alt) => {
+        const pe = parsePeVideoAlt(alt);
+        if (!pe || !pe.mdFile) return whole;
+        const label =
+          pe.label ||
+          String(alt)
+            .replace(/\{\|pe-video:[^}]+\|\}/, "")
+            .replace(/@@pe:[^@]+@@[^@]+@@/, "")
+            .trim() ||
+          PathBasenameNoExt(pe.mdFile);
+        return `![${label}](${pe.mdFile})`;
+      }
+    );
     // 1) draft 미디어
-    let out = body.replace(
+    out = out.replace(
       new RegExp("!\\[([^\\]]*)\\]\\(" + escDraft + "([^)]+)\\)", "g"),
       (_, alt, rest) => `![${alt}](${mediaUrlToMdSrc(draftPrefix + rest, path)})`
     );
@@ -1277,6 +1608,23 @@
     return { name: `peAlign${align}`, tooltip, el: button };
   }
 
+  function makeVideoToolbarItem() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toastui-editor-toolbar-icons pe-video-btn";
+    button.style.backgroundImage = "none";
+    button.style.margin = "0";
+    button.setAttribute("aria-label", "동영상 삽입");
+    button.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17 10.5V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z"/></svg>';
+    button.addEventListener("mousedown", (e) => e.preventDefault());
+    button.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (fileVideo) fileVideo.click();
+    });
+    return { name: "peVideo", tooltip: "동영상 삽입", el: button };
+  }
+
   function stripTextAlignComments(md) {
     return String(md || "")
       .replace(/(?:^|\n)<!--\s*text-align:(?:left|center|right)\s*-->\s*(?=\n|$)/g, "\n")
@@ -1540,7 +1888,11 @@
 
   function fullMarkdown() {
     if (!editor || !currentPath) return savedFull;
+    // video DOM → img(mp4) 직렬화 → md 추출 → 다시 video로 복구
+    videosToImgsForMarkdown();
     let body = bodyFromEditor(editor.getMarkdown(), currentPath);
+    body = applyDomVideosToMd(body);
+    upgradeVideoImages();
     body = editorTablesToImageRows(body);
     body = applyDomWidthsToMd(body, currentPath);
     body = applyDomGapsToMd(body);
@@ -1577,6 +1929,7 @@
     $("btnDelete").disabled = !currentPath || publishing;
     $("btnPublish").disabled = !on;
     $("btnImage").disabled = !currentPath || publishing;
+    if ($("btnVideo")) $("btnVideo").disabled = !currentPath || publishing;
     $("btnFeatured").disabled = !on;
     $("btnFeaturedClear").disabled = !on;
     $("btnMd").disabled = !currentPath || publishing;
@@ -2470,11 +2823,11 @@
   }
 
   function isContentImg(img) {
-    return !!(
-      img &&
-      img.tagName === "IMG" &&
-      !img.classList.contains("ProseMirror-separator")
-    );
+    if (!img || img.tagName !== "IMG") return false;
+    if (img.classList.contains("ProseMirror-separator")) return false;
+    if (img.classList.contains("pe-video-poster")) return false;
+    if (parsePeVideoAlt(img.getAttribute("alt") || "")) return false;
+    return true;
   }
 
   function syncImageRowBody() {
@@ -3126,13 +3479,175 @@
   window.addEventListener("touchend", endResize);
   window.addEventListener("touchcancel", endResize);
 
-  function decorateAllImages() {
+  function parsePeVideoAlt(alt) {
+    const raw = String(alt || "");
+    const m = /@@pe:([^@]+)@@([^@]+)@@/.exec(raw);
+    if (!m) {
+      // 구형 마커
+      const old = /\{\|pe-video:([^|]+)\|([^|]+)\|\}/.exec(raw);
+      if (!old) return null;
+      return {
+        mediaUrl: old[1],
+        mdFile: old[2],
+        label: raw.replace(/\{\|pe-video:[^}]+\|\}/, "").trim(),
+      };
+    }
+    return {
+      mediaUrl: m[1],
+      mdFile: m[2],
+      label: raw.replace(/@@pe:[^@]+@@[^@]+@@/, "").trim(),
+    };
+  }
+
+  /** 포스터/깨진 mp4 img → 클릭 재생용 포스터로 통일 (Toast가 video를 지우므로 img 유지) */
+  function upgradeVideoImages() {
     if (!currentPath) return;
     const root = wwContentsRoot();
     if (!root) return;
     root.querySelectorAll("img").forEach((img) => {
+      if (img.closest && img.closest(".pe-video-wrap")) return;
+      const src = img.getAttribute("src") || "";
+      const altRaw = img.getAttribute("alt") || "";
+      let pe = parsePeVideoAlt(altRaw);
+      const fromMp4 = isVideoSrc(src) || isVideoSrc(img.dataset.mdFile || "");
+      if (!pe && !fromMp4) return;
+      const mediaUrl = pe
+        ? pe.mediaUrl
+        : isVideoSrc(src)
+          ? src.split("#")[0].split("?")[0]
+          : mdSrcToMediaUrl(img.dataset.mdFile || src, currentPath).split("#")[0].split("?")[0];
+      const mdFile = pe
+        ? pe.mdFile
+        : img.dataset.mdFile || mdFileFromSrc(src);
+      const alt = (pe && pe.label) || PathBasenameNoExt(mdFile);
+      const framePoster = videoFramePosterUrl(mdFile, currentPath);
+      const usingGeneric =
+        String(src).includes("pe-video-poster.png") || !src || src.endsWith("/");
+      if (!pe || usingGeneric || isVideoSrc(src)) {
+        img.src = framePoster;
+        img.alt = peVideoAlt(alt, mediaUrl, mdFile);
+      }
+      img.classList.add("pe-video-poster");
+      img.dataset.mdFile = mdFile;
+      img.dataset.mediaUrl = mediaUrl;
+      img.title = `${alt} · 클릭하여 재생`;
+      img.style.cursor = "pointer";
+      img.style.objectFit = img.style.objectFit || "cover";
+      img.style.background = img.style.background || "#111";
+      if (!img.dataset.posterBound) {
+        img.dataset.posterBound = "1";
+        img.addEventListener("error", () => {
+          if (img.dataset.posterTried === "1") {
+            img.src = PE_VIDEO_POSTER;
+            return;
+          }
+          img.dataset.posterTried = "1";
+          fetch("/api/video-poster", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: currentPath, md_path: mdFile }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d && d.poster_url) img.src = d.poster_url + "?t=" + Date.now();
+              else img.src = PE_VIDEO_POSTER;
+            })
+            .catch(() => {
+              img.src = PE_VIDEO_POSTER;
+            });
+        });
+      }
+    });
+  }
+
+  /** getMarkdown 직전: video → 포스터 img(title=pe-video) 로 직렬화 힌트.
+   *  실제 저장 md는 bodyFromEditor / applyDomVideosToMd 가 ![…](….mp4) 로 복원.
+   */
+  function videosToImgsForMarkdown() {
+    const root = wwContentsRoot();
+    if (!root) return;
+    root.querySelectorAll(".pe-video-wrap, video.pe-video").forEach((el) => {
+      const video = el.tagName === "VIDEO" ? el : el.querySelector("video");
+      if (!video) return;
+      const mdFile = video.dataset.mdFile || mdFileFromSrc(video.src);
+      const mediaUrl = (video.currentSrc || video.src || "").split("#")[0].split("?")[0];
+      const alt = video.title || PathBasenameNoExt(mdFile);
+      const img = document.createElement("img");
+      img.alt = `${alt}@@pe:${mediaUrl}@@${mdFile}@@`;
+      img.dataset.mdFile = mdFile;
+      img.src = "/static/pe-video-poster.png";
+      el.replaceWith(img);
+    });
+  }
+
+  /** 저장 md에 영상 줄이 빠졌으면 caption 앞에 ![…](mp4) 를 다시 넣음 */
+  function applyDomVideosToMd(md) {
+    const root = wwContentsRoot();
+    if (!root) return md;
+    const nodes = [
+      ...root.querySelectorAll(
+        "iframe.pe-video-frame, img[alt*='@@pe:'], img[alt*='{|pe-video:'], video.pe-video, .pe-video-wrap video"
+      ),
+    ];
+    let out = md;
+    nodes.forEach((el) => {
+      let pe = null;
+      if (el.tagName === "IFRAME") {
+        let mdFile = el.dataset.mdFile || "";
+        if (!mdFile && el.src) {
+          try {
+            mdFile = new URL(el.src, location.origin).searchParams.get("md") || "";
+          } catch (_) {}
+        }
+        pe = {
+          mdFile,
+          label: el.getAttribute("title") || PathBasenameNoExt(mdFile),
+        };
+      } else {
+        const video = el.tagName === "VIDEO" ? el : el.querySelector ? el.querySelector("video") : null;
+        pe =
+          parsePeVideoAlt(el.getAttribute("alt") || "") ||
+          (video
+            ? {
+                mediaUrl: video.src,
+                mdFile: video.dataset.mdFile || mdFileFromSrc(video.src),
+                label: video.title || PathBasenameNoExt(video.dataset.mdFile || ""),
+              }
+            : null);
+      }
+      if (!pe || !pe.mdFile) return;
+      if (out.includes(pe.mdFile)) return;
+      const alt = pe.label || PathBasenameNoExt(pe.mdFile);
+      const line = `![${alt}](${pe.mdFile})`;
+      const esc = alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const capRe = new RegExp(`(^|\\n)(\\*[^\\n]*${esc}[^\\n]*\\*)`, "m");
+      if (capRe.test(out)) {
+        out = out.replace(capRe, `$1${line}\n\n$2`);
+      } else {
+        out = out.trimEnd() + `\n\n${line}\n`;
+      }
+    });
+    return out;
+  }
+
+  function decorateAllImages() {
+    if (!currentPath) return;
+    const root = wwContentsRoot();
+    if (!root) return;
+    // Toast WW가 mp4를 버려도 원본 md에서 포스터를 다시 심음
+    injectVideosFromSourceMd(lastBodyForGaps);
+    root.querySelectorAll("img").forEach((img) => {
+      const alt = img.getAttribute("alt") || "";
+      if (
+        img.classList.contains("pe-video-poster") ||
+        parsePeVideoAlt(alt) ||
+        isVideoSrc(img.getAttribute("src") || "")
+      ) {
+        return;
+      }
       decorateImage(img, currentPath);
     });
+    upgradeVideoImages();
   }
 
   function bindImageUi() {
@@ -3145,6 +3660,24 @@
       if (!img || !root.contains(img)) return;
       e.preventDefault();
       e.stopPropagation();
+      const pe =
+        parsePeVideoAlt(img.getAttribute("alt") || "") ||
+        (img.classList.contains("pe-video-poster")
+          ? {
+              mediaUrl: img.dataset.mediaUrl || "",
+              mdFile: img.dataset.mdFile || "",
+              label: img.title || PathBasenameNoExt(img.dataset.mdFile || ""),
+            }
+          : null);
+      if (pe && pe.mediaUrl) {
+        openVideoLightbox(
+          pe.mediaUrl,
+          pe.label || PathBasenameNoExt(pe.mdFile),
+          pe.mdFile || img.dataset.mdFile || ""
+        );
+        return;
+      }
+      if (!isContentImg(img)) return;
       decorateImage(img, currentPath);
       showImgToolbar(img);
     });
@@ -3506,6 +4039,7 @@
       autofocus: true,
       initialValue: initialMd,
       plugins: mergePlugin ? [mergePlugin] : [],
+      customHTMLSanitizer: peSanitizeHtml,
       toolbarItems: [
         ["heading", "bold", "italic", "strike"],
         ["hr", "quote"],
@@ -3513,6 +4047,7 @@
         [
           "table",
           "image",
+          makeVideoToolbarItem(),
           "link",
           makeAlignToolbarItem("left", "왼쪽 정렬"),
           makeAlignToolbarItem("center", "가운데 정렬"),
@@ -3669,7 +4204,17 @@
           `<div class="meta"><div class="t"></div><div class="m"></div></div>`;
         sumBtn.querySelector(".t").textContent = "티스토리 요약";
         sumBtn.querySelector(".m").textContent = sumMeta;
-        sumBtn.addEventListener("click", () => openDraft(d.tistory_summary_path));
+        sumBtn.addEventListener("click", async () => {
+          // 원글 제목·WP URL을 요약에 맞춘 뒤 연다
+          try {
+            await fetch("/api/ensure-tistory-summary", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ path: d.path }),
+            });
+          } catch (_) {}
+          await openDraft(d.tistory_summary_path);
+        });
         child.appendChild(sumBtn);
       } else {
         const miss = document.createElement("button");
@@ -3901,6 +4446,36 @@
     }
   }
 
+  async function insertVideoFromPicker(file) {
+    if (!editor || !file || !currentPath) return;
+    if (!/\.(mp4|mov|m4v|webm)$/i.test(file.name)) {
+      setStatus("지원 형식: mp4 · mov · m4v · webm", "dirty");
+      return;
+    }
+    try {
+      setStatus("동영상 업로드 중…");
+      const data = await uploadFile(file);
+      const alt = file.name.replace(/\.[^.]+$/, "") || "영상";
+      const mdLine = `\n\n![${alt}](${data.md_path})\n\n`;
+      // Toast WW는 mp4를 버리므로 원본 body에 넣고 포스터로 다시 그림
+      let body = bodyFromEditor(editor.getMarkdown(), currentPath);
+      body = (body || "").replace(/\s*$/, "") + mdLine;
+      lastBodyForGaps = body;
+      const editorMd = bodyToEditor(body, currentPath);
+      suppressChange = true;
+      editor.setMarkdown(editorMd);
+      suppressChange = false;
+      markDirty();
+      setStatus(`동영상 추가 · ${data.md_path} · ⌘S 저장`, "dirty");
+      setTimeout(() => {
+        decorateAllImages();
+        bindImageUi();
+      }, 80);
+    } catch (e) {
+      setStatus(String(e.message || e), "dirty");
+    }
+  }
+
   $("btnReload").addEventListener("click", () => loadDrafts());
   $("btnNew").addEventListener("click", () => openNewDraftDialog());
   $("btnNewClose").addEventListener("click", () => newDraftDialog.close());
@@ -3931,12 +4506,31 @@
     if (confirm(msg)) publish("publish");
   });
   $("btnImage").addEventListener("click", () => fileImage.click());
+  if ($("btnVideo")) $("btnVideo").addEventListener("click", () => fileVideo && fileVideo.click());
   $("btnFeatured").addEventListener("click", () => openFeaturedPicker());
   $("btnFeaturedClear").addEventListener("click", () => setFeaturedPath(null));
   $("btnMd").addEventListener("click", () => {
     mdSource.textContent = fullMarkdown();
     mdDialog.showModal();
   });
+  const videoDialog = $("videoDialog");
+  const btnVideoClose = $("btnVideoClose");
+  const btnVideoEdit = $("btnVideoEdit");
+  if (btnVideoClose) {
+    btnVideoClose.addEventListener("click", () => closeVideoLightbox());
+  }
+  if (btnVideoEdit) {
+    btnVideoEdit.addEventListener("click", () => {
+      if (!lastVideoLightbox || !lastVideoLightbox.mdFile) {
+        setStatus("편집할 영상 정보가 없습니다", "dirty");
+        return;
+      }
+      openVideoEditorFor(lastVideoLightbox);
+    });
+  }
+  if (videoDialog) {
+    videoDialog.addEventListener("close", () => stopVideoLightboxPlayer());
+  }
   categorySelect.addEventListener("change", () => {
     const v = categorySelect.value;
     if (v) applyCategory(v);
@@ -3957,6 +4551,13 @@
     if (f) insertImageFromPicker(f);
     fileImage.value = "";
   });
+  if (fileVideo) {
+    fileVideo.addEventListener("change", () => {
+      const f = fileVideo.files && fileVideo.files[0];
+      if (f) insertVideoFromPicker(f);
+      fileVideo.value = "";
+    });
+  }
   filterEl.addEventListener("input", renderList);
   ensureCategoryOptions();
   ensureNewCategoryOptions();
