@@ -258,4 +258,26 @@ def load_config(
 
     loopback = [f"127.0.0.1:{cfg.port}", f"localhost:{cfg.port}", f"[::1]:{cfg.port}"]
     cfg.allowed_hosts = list(dict.fromkeys([*loopback, *cfg.allowed_hosts]))
+    # CSRF: 재시작마다 바뀌면 열린 탭의 업로드/저장이 403 → workspace에 유지
+    cfg.csrf_token = _load_or_create_csrf(cfg.workspace)
     return cfg
+
+
+def _load_or_create_csrf(workspace: Path) -> str:
+    path = workspace / ".preview-editor-csrf"
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if len(existing) >= 16:
+            return existing
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(32)
+    try:
+        path.write_text(token + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return token

@@ -45,17 +45,56 @@
   let csrfToken = "";
   let FEATURES = { tistory_summary: false, tistory_skip_topics: [] };
   const nativeFetch = window.fetch.bind(window);
+  let csrfRefresh = null;
+  async function refreshCsrfToken() {
+    if (!csrfRefresh) {
+      csrfRefresh = nativeFetch("/api/config")
+        .then((r) => r.json())
+        .then((cfg) => {
+          csrfToken = (cfg && cfg.csrf_token) || "";
+          window.__PE_CSRF = csrfToken;
+          return csrfToken;
+        })
+        .finally(() => {
+          csrfRefresh = null;
+        });
+    }
+    return csrfRefresh;
+  }
   // 변경 요청(PUT/POST/DELETE)에 CSRF 토큰 자동 첨부 — photo-editor.js 포함
-  window.fetch = (input, init = {}) => {
+  // 서버 재시작 후 옛 토큰이면 한 번 갱신·재시도 (이미지 드래그/저장 403 방지)
+  window.fetch = async (input, init = {}) => {
     const method = String((init && init.method) || "GET").toUpperCase();
     const url = typeof input === "string" ? input : (input && input.url) || "";
     const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
-    if (sameOrigin && method !== "GET" && method !== "HEAD" && csrfToken) {
-      const headers = new Headers((init && init.headers) || {});
+    const mutating =
+      sameOrigin && method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+    const withCsrf = (base) => {
+      if (!mutating || !csrfToken) return base;
+      const next = { ...base };
+      const headers = new Headers((base && base.headers) || {});
       headers.set("X-CSRF-Token", csrfToken);
-      init = { ...init, headers };
+      next.headers = headers;
+      return next;
+    };
+    let opts = withCsrf(init || {});
+    let res = await nativeFetch(input, opts);
+    if (mutating && res.status === 403) {
+      let err = "";
+      try {
+        const clone = res.clone();
+        const data = await clone.json();
+        err = String((data && data.error) || "");
+      } catch (_) {
+        /* ignore */
+      }
+      if (err.includes("csrf") || err.includes("CSRF") || !err) {
+        await refreshCsrfToken();
+        opts = withCsrf(init || {});
+        res = await nativeFetch(input, opts);
+      }
     }
-    return nativeFetch(input, init);
+    return res;
   };
 
   const $ = (id) => document.getElementById(id);
@@ -67,6 +106,8 @@
   const fileVideo = $("fileVideo");
   const editorMount = $("editorMount");
   let lastVideoLightbox = null; // { mediaUrl, mdFile, label }
+  /** 파일 선택창이 포커스를 훔치기 전 WYSIWYG 커서 저장 */
+  let savedWwSelection = null; // { from, to }
   const mdDialog = $("mdDialog");
   const mdSource = $("mdSource");
 
@@ -565,7 +606,7 @@
     img.title = `${alt || PathBasenameNoExt(mdFile)} · 클릭하여 재생`;
     img.setAttribute(
       "style",
-      "display:block;width:100%;max-width:100%;height:auto;object-fit:cover;background:#111;cursor:pointer;"
+      "display:block;width:auto;max-width:100%;height:auto;max-height:min(72vh,640px);object-fit:contain;background:#111;cursor:pointer;margin-left:auto;margin-right:auto;"
     );
     img.addEventListener(
       "error",
@@ -1504,6 +1545,43 @@
     return (editor && editor.wwEditor && editor.wwEditor.view) || null;
   }
 
+  function captureWwSelection() {
+    const view = getWwView();
+    if (!view) {
+      savedWwSelection = null;
+      return;
+    }
+    try {
+      const { from, to } = view.state.selection;
+      savedWwSelection = { from, to };
+    } catch (_) {
+      savedWwSelection = null;
+    }
+  }
+
+  function restoreWwSelection() {
+    const view = getWwView();
+    if (!view || !savedWwSelection) return false;
+    try {
+      const size = view.state.doc.content.size;
+      const from = Math.max(0, Math.min(savedWwSelection.from, size));
+      const to = Math.max(0, Math.min(savedWwSelection.to, size));
+      const Sel = view.state.selection.constructor;
+      const sel =
+        typeof Sel.create === "function"
+          ? Sel.create(view.state.doc, from, to)
+          : typeof Sel.near === "function"
+            ? Sel.near(view.state.doc.resolve(from))
+            : null;
+      if (!sel) return false;
+      view.dispatch(view.state.tr.setSelection(sel).scrollIntoView());
+      view.focus();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function readElTextAlign(el) {
     if (!el) return "";
     const data = el.getAttribute("data-text-align");
@@ -1617,12 +1695,164 @@
     button.setAttribute("aria-label", "동영상 삽입");
     button.innerHTML =
       '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17 10.5V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z"/></svg>';
-    button.addEventListener("mousedown", (e) => e.preventDefault());
+    button.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // 포커스 빼앗김 방지 · 커서 유지
+      captureWwSelection();
+    });
     button.addEventListener("click", (e) => {
       e.preventDefault();
+      captureWwSelection();
       if (fileVideo) fileVideo.click();
     });
     return { name: "peVideo", tooltip: "동영상 삽입", el: button };
+  }
+
+  const PE_COLOR_PRESET = [
+    "#181818",
+    "#4b5563",
+    "#0B6B72",
+    "#2563eb",
+    "#7c3aed",
+    "#dc2626",
+    "#ea580c",
+    "#ca8a04",
+    "#16a34a",
+    "#ffffff",
+  ];
+
+  function parseSpanStyle(style) {
+    const out = {};
+    String(style || "")
+      .split(";")
+      .forEach((part) => {
+        const i = part.indexOf(":");
+        if (i < 0) return;
+        const k = part.slice(0, i).trim().toLowerCase();
+        const v = part.slice(i + 1).trim();
+        if (k === "color" || k === "background-color") out[k] = v;
+      });
+    return out;
+  }
+
+  function styleFromMap(map) {
+    return Object.keys(map)
+      .filter((k) => map[k])
+      .map((k) => `${k}: ${map[k]}`)
+      .join("; ");
+  }
+
+  /** 선택 구간에 span 마크(색/배경) 적용. colorSyntax 플러그인이 span 마크를 켠 뒤 동작 */
+  function applySpanCss(cssMap) {
+    const view = getWwView();
+    if (!view || !editor) {
+      setStatus("편집기가 없습니다", "dirty");
+      return false;
+    }
+    restoreWwSelection();
+    const { state, dispatch } = view;
+    const { from, to, empty } = state.selection;
+    if (empty || from === to) {
+      setStatus("색을 넣을 글자를 먼저 드래그하세요", "dirty");
+      return false;
+    }
+    const spanType = state.schema.marks && state.schema.marks.span;
+    if (!spanType) {
+      setStatus("색상 플러그인을 불러오지 못했습니다", "dirty");
+      return false;
+    }
+    const map = { ...cssMap };
+    state.doc.nodesBetween(from, to, (node) => {
+      if (!node.isText) return;
+      const m = spanType.isInSet(node.marks || []);
+      if (!m) return;
+      const cur = parseSpanStyle(
+        (m.attrs && m.attrs.htmlAttrs && m.attrs.htmlAttrs.style) || ""
+      );
+      Object.keys(cur).forEach((k) => {
+        if (map[k] === undefined) map[k] = cur[k];
+      });
+    });
+    // 빈 값은 해당 속성 제거
+    Object.keys(map).forEach((k) => {
+      if (!map[k]) delete map[k];
+    });
+    let tr = state.tr;
+    tr = tr.removeMark(from, to, spanType);
+    const style = styleFromMap(map);
+    if (style) {
+      const mark = spanType.create({ htmlAttrs: { style } });
+      tr = tr.addMark(from, to, mark);
+    }
+    dispatch(tr.scrollIntoView());
+    view.focus();
+    markDirty();
+    return true;
+  }
+
+  function makeBgColorToolbarItem() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toastui-editor-toolbar-icons pe-bgcolor-btn";
+    button.style.backgroundImage = "none";
+    button.style.margin = "0";
+    button.setAttribute("aria-label", "글자 배경색");
+    button.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 17h18v4H3v-4zm2.5-5.5L12 3l6.5 8.5H14v4h-4v-4H5.5z"/></svg>';
+
+    const popup = document.createElement("div");
+    popup.className = "pe-color-popup";
+    popup.hidden = true;
+    const swatches = document.createElement("div");
+    swatches.className = "pe-color-swatches";
+    PE_COLOR_PRESET.forEach((c) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pe-color-swatch";
+      b.style.background = c;
+      b.title = c;
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        applySpanCss({ "background-color": c });
+        popup.hidden = true;
+      });
+      swatches.appendChild(b);
+    });
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "btn pe-color-clear";
+    clearBtn.textContent = "배경 제거";
+    clearBtn.addEventListener("mousedown", (e) => e.preventDefault());
+    clearBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      applySpanCss({ "background-color": "" });
+      popup.hidden = true;
+    });
+    popup.appendChild(swatches);
+    popup.appendChild(clearBtn);
+    document.body.appendChild(popup);
+
+    button.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      captureWwSelection();
+    });
+    button.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      captureWwSelection();
+      const rect = button.getBoundingClientRect();
+      popup.style.left = `${Math.max(8, rect.left)}px`;
+      popup.style.top = `${rect.bottom + 6}px`;
+      popup.hidden = !popup.hidden;
+    });
+    document.addEventListener("click", (e) => {
+      if (popup.hidden) return;
+      if (popup.contains(e.target) || button.contains(e.target)) return;
+      popup.hidden = true;
+    });
+
+    return { name: "peBgColor", tooltip: "글자 배경색", el: button };
   }
 
   function stripTextAlignComments(md) {
@@ -4028,6 +4258,25 @@
         window.toastui.Editor.plugin &&
         window.toastui.Editor.plugin.tableMergedCell) ||
       window.toastuiTableMergedCell;
+    // UMD 버그로 color-syntax가 plugin.uml 에 붙는 빌드가 있음
+    const colorSyntaxPlugin =
+      (window.toastui &&
+        window.toastui.Editor &&
+        window.toastui.Editor.plugin &&
+        (window.toastui.Editor.plugin.colorSyntax ||
+          window.toastui.Editor.plugin.uml)) ||
+      null;
+
+    const editorPlugins = [];
+    if (mergePlugin) editorPlugins.push(mergePlugin);
+    if (typeof colorSyntaxPlugin === "function") {
+      editorPlugins.push([
+        colorSyntaxPlugin,
+        {
+          preset: PE_COLOR_PRESET,
+        },
+      ]);
+    }
 
     editor = new toastui.Editor({
       el,
@@ -4038,7 +4287,7 @@
       usageStatistics: false,
       autofocus: true,
       initialValue: initialMd,
-      plugins: mergePlugin ? [mergePlugin] : [],
+      plugins: editorPlugins,
       customHTMLSanitizer: peSanitizeHtml,
       toolbarItems: [
         ["heading", "bold", "italic", "strike"],
@@ -4052,6 +4301,7 @@
           makeAlignToolbarItem("left", "왼쪽 정렬"),
           makeAlignToolbarItem("center", "가운데 정렬"),
           makeAlignToolbarItem("right", "오른쪽 정렬"),
+          makeBgColorToolbarItem(),
         ],
         ["code", "codeblock"],
       ],
@@ -4456,17 +4706,26 @@
       setStatus("동영상 업로드 중…");
       const data = await uploadFile(file);
       const alt = file.name.replace(/\.[^.]+$/, "") || "영상";
-      const mdLine = `\n\n![${alt}](${data.md_path})\n\n`;
-      // Toast WW는 mp4를 버리므로 원본 body에 넣고 포스터로 다시 그림
-      let body = bodyFromEditor(editor.getMarkdown(), currentPath);
-      body = (body || "").replace(/\s*$/, "") + mdLine;
-      lastBodyForGaps = body;
-      const editorMd = bodyToEditor(body, currentPath);
-      suppressChange = true;
-      editor.setMarkdown(editorMd);
-      suppressChange = false;
+      const mdFile = mdFileFromSrc(data.md_path);
+      const mediaUrl = mdSrcToMediaUrl(mdFile, currentPath).split("#")[0].split("?")[0];
+      // Toast WW는 raw mp4를 버리므로 커서 위치에 포스터 img로 삽입 (저장 시 ![…](….mov) 복원)
+      restoreWwSelection();
+      editor.exec("addImage", {
+        imageUrl: PE_VIDEO_POSTER,
+        altText: peVideoAlt(alt, mediaUrl, mdFile),
+      });
+      lastBodyForGaps = bodyFromEditor(editor.getMarkdown(), currentPath);
+      // alt가 깨져 본문에 영상 줄이 없으면, 저장용 소스에만 커서 근처 삽입 대신 보정
+      if (lastBodyForGaps && !lastBodyForGaps.includes(mdFile)) {
+        const line = `![${alt}](${mdFile})`;
+        lastBodyForGaps = applyDomVideosToMd(lastBodyForGaps);
+        if (!lastBodyForGaps.includes(mdFile)) {
+          lastBodyForGaps = `${(lastBodyForGaps || "").replace(/\s*$/, "")}\n\n${line}\n`;
+        }
+      }
       markDirty();
-      setStatus(`동영상 추가 · ${data.md_path} · ⌘S 저장`, "dirty");
+      setStatus(`동영상 추가 · ${mdFile} · ⌘S 저장`, "dirty");
+      savedWwSelection = null;
       setTimeout(() => {
         decorateAllImages();
         bindImageUi();
@@ -4506,7 +4765,16 @@
     if (confirm(msg)) publish("publish");
   });
   $("btnImage").addEventListener("click", () => fileImage.click());
-  if ($("btnVideo")) $("btnVideo").addEventListener("click", () => fileVideo && fileVideo.click());
+  if ($("btnVideo")) {
+    $("btnVideo").addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      captureWwSelection();
+    });
+    $("btnVideo").addEventListener("click", () => {
+      captureWwSelection();
+      if (fileVideo) fileVideo.click();
+    });
+  }
   $("btnFeatured").addEventListener("click", () => openFeaturedPicker());
   $("btnFeaturedClear").addEventListener("click", () => setFeaturedPath(null));
   $("btnMd").addEventListener("click", () => {
@@ -4636,10 +4904,11 @@
         return;
       }
       const files = [...(e.dataTransfer.files || [])].filter((f) =>
-        /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name)
+        /^image\//.test(f.type) ||
+        /\.(png|jpe?g|gif|webp|svg|heic|heif)$/i.test(f.name)
       );
       if (!files.length) {
-        setStatus("이미지 파일만 넣을 수 있습니다", "dirty");
+        setStatus("이미지 파일만 넣을 수 있습니다 (png/jpg/webp/heic)", "dirty");
         return;
       }
       setStatus("이미지 업로드 중…");

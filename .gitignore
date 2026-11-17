@@ -9,6 +9,8 @@ venv/
 *.env.local
 preview-editor.config.json
 config.json
+.preview-editor-csrf
+**/.preview-editor-csrf
 
 # 샘플 외 작업 내용
 examples/workspace/drafts/**/images/*

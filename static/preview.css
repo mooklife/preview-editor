@@ -695,14 +695,15 @@ body.app {
   cursor: pointer;
 }
 
-/* md ![…](….mp4) → 포스터 img (Toast WW가 video/iframe을 지움) */
+/* md ![…](….mp4) → 포스터 img (Toast WW가 video/iframe을 지움)
+   세로 영상도 WP와 같이 높이 상한 — 예전 16:9 강제면 편집기만 짧게 보였음 */
 .toastui-editor-contents img.pe-video-poster {
   display: block;
-  width: 100%;
+  width: auto;
   max-width: 100%;
   height: auto;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
+  max-height: min(72vh, 640px);
+  object-fit: contain;
   margin: calc(0.55em * var(--editor-line, 1.8)) auto 0.15em;
   background: #111;
   border-radius: 2px;
@@ -1360,6 +1361,57 @@ body.is-col-resizing * {
   stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.toastui-editor-defaultUI .toastui-editor-toolbar .pe-bgcolor-btn,
+.toastui-editor-defaultUI .toastui-editor-toolbar .pe-video-btn {
+  background-image: none !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  color: #331c15;
+}
+
+.toastui-editor-defaultUI .toastui-editor-toolbar .pe-bgcolor-btn svg,
+.toastui-editor-defaultUI .toastui-editor-toolbar .pe-video-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.pe-color-popup {
+  position: fixed;
+  z-index: 12000;
+  background: #fff;
+  border: 1px solid #d4cbc3;
+  border-radius: 6px;
+  padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  min-width: 180px;
+}
+
+.pe-color-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 28px);
+  gap: 6px;
+}
+
+.pe-color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: 1px solid #cfc5bb;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pe-color-swatch:hover {
+  outline: 2px solid #0b6b72;
+  outline-offset: 1px;
+}
+
+.pe-color-clear {
+  margin-top: 8px;
+  width: 100%;
 }
 
 .toastui-editor-contents [data-text-align="center"] {

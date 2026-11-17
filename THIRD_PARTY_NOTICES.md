@@ -7,6 +7,7 @@ Preview Editor는 `static/vendor/` 아래에 다음 오픈소스 라이브러리
 |---|---|---|---|---|
 | Toast UI Editor | 3.2.2 | MIT | `toastui-editor-all.min.js`, `toastui-editor.min.css` | https://github.com/nhn/tui.editor |
 | Toast UI Editor Plugin: Table Merged Cell | 3.1.0 | MIT | `toastui-editor-plugin-table-merged-cell.*` | https://github.com/nhn/tui.editor/tree/master/plugins/table-merged-cell |
+| Toast UI Editor Plugin: Color Syntax | 3.1.0 | MIT | `toastui-editor-plugin-color-syntax.*` | https://github.com/nhn/tui.editor/tree/master/plugins/color-syntax |
 | TOAST UI Image Editor | 3.15.3 | MIT | `tui-image-editor.min.js`, `tui-image-editor.min.css` | https://github.com/nhn/tui.image-editor |
 | TOAST UI Color Picker | 2.2.8 | MIT | `tui-color-picker.min.js`, `tui-color-picker.css` | https://github.com/nhn/tui.color-picker |
 | Fabric.js | 4.2.0 | MIT | `fabric.min.js` | https://github.com/fabricjs/fabric.js |

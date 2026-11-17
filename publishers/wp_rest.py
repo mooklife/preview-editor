@@ -175,14 +175,52 @@ def rewrite_frontmatter(path: Path, updates: dict[str, str]) -> None:
 
 
 # ── markdown fallback (프론트 HTML이 없을 때) ─────────────────────────────
+_SAFE_COLOR_VAL = re.compile(
+    r"^(?:"
+    r"#[0-9a-fA-F]{3,8}"
+    r"|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)"
+    r"|rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(?:0|1|0?\.\d+)\s*\)"
+    r")$"
+)
+_SAFE_SPAN_RE = re.compile(r'<span\s+style="([^"]*)">(.*?)</span>', re.I | re.S)
+
+
+def _safe_color_style(style: str) -> str | None:
+    parts: list[str] = []
+    for decl in (style or "").split(";"):
+        decl = decl.strip()
+        if not decl:
+            continue
+        if ":" not in decl:
+            return None
+        prop, val = decl.split(":", 1)
+        prop, val = prop.strip().lower(), val.strip()
+        if prop not in ("color", "background-color") or not _SAFE_COLOR_VAL.fullmatch(val):
+            return None
+        parts.append(f"{prop}:{val}")
+    return ";".join(parts) if parts else None
+
+
 def _inline(s: str) -> str:
-    s = html_lib.escape(s, quote=False)
-    s = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", r'<img src="\2" alt="\1" />', s)
-    s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', s)
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", s)
-    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
-    return s
+    holders: list[str] = []
+
+    def _park(m: re.Match[str]) -> str:
+        style = _safe_color_style(m.group(1))
+        if style is None:
+            return m.group(2)
+        holders.append(f'<span style="{style}">{_inline(m.group(2))}</span>')
+        return f"\x00PECOLOR{len(holders) - 1}\x00"
+
+    raw = _SAFE_SPAN_RE.sub(_park, s or "")
+    out = html_lib.escape(raw, quote=False)
+    out = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", r'<img src="\2" alt="\1" />', out)
+    out = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', out)
+    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
+    out = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", out)
+    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+    for i, html in enumerate(holders):
+        out = out.replace(f"\x00PECOLOR{i}\x00", html)
+    return out
 
 
 def simple_md_to_html(md: str) -> str:
