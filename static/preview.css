@@ -1386,13 +1386,26 @@ body.is-col-resizing * {
   border-radius: 6px;
   padding: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  min-width: 180px;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 16px));
+}
+
+.pe-color-label {
+  display: block;
+  font-size: 12px;
+  color: #6b5e55;
+  margin-bottom: 6px;
 }
 
 .pe-color-swatches {
   display: grid;
   grid-template-columns: repeat(5, 28px);
   gap: 6px;
+}
+
+.pe-color-swatches-wide {
+  grid-template-columns: repeat(6, 28px);
+  margin-bottom: 10px;
 }
 
 .pe-color-swatch {
@@ -1409,8 +1422,47 @@ body.is-col-resizing * {
   outline-offset: 1px;
 }
 
+.pe-color-custom {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #eee5dc;
+}
+
+.pe-color-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.pe-color-native {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #cfc5bb;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.pe-color-hex {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #cfc5bb;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.pe-color-apply {
+  flex-shrink: 0;
+  height: 32px;
+}
+
 .pe-color-clear {
-  margin-top: 8px;
+  margin-top: 4px;
   width: 100%;
 }
 

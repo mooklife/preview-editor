@@ -328,21 +328,49 @@
     return "/media/" + draftDir(path) + "/";
   }
 
+  /** 경로 세그먼트만 인코딩 (슬래시 유지). 이미 %XX 인 값은 이중 인코딩 방지. */
+  function encodeMediaPath(rel) {
+    return String(rel || "")
+      .split("/")
+      .map((seg) => {
+        if (!seg) return "";
+        try {
+          if (/%[0-9A-Fa-f]{2}/.test(seg)) return seg;
+        } catch (_) {}
+        return encodeURIComponent(seg);
+      })
+      .join("/");
+  }
+
+  function decodeMediaPath(rel) {
+    return String(rel || "")
+      .split("/")
+      .map((seg) => {
+        if (!seg) return "";
+        try {
+          return decodeURIComponent(seg);
+        } catch (_) {
+          return seg;
+        }
+      })
+      .join("/");
+  }
+
   /** md 이미지 src → /media/... 미리보기 URL */
   function mdSrcToMediaUrl(src, draftPath) {
     const meta = parseSrcMeta(src.replace(/^\.\//, ""));
     let file = meta.file;
     let url;
     if (file.startsWith("images/")) {
-      url = mediaBase(draftPath) + file;
+      url = mediaBase(draftPath) + encodeMediaPath(file);
     } else if (isSharedMedia(file)) {
       // workspace 루트 기준 공용 자산 (media_allow)
-      url = "/media/" + file;
+      url = "/media/" + encodeMediaPath(file);
     } else if (file.startsWith(DRAFTS_PREFIX)) {
-      url = "/media/" + file;
+      url = "/media/" + encodeMediaPath(file);
     } else {
       // 기본: draft 폴더 상대 (images 없이 파일명만 있는 경우 등)
-      url = mediaBase(draftPath) + file;
+      url = mediaBase(draftPath) + encodeMediaPath(file);
     }
     if (meta.w !== 100) url += `#w=${meta.w}`;
     return url;
@@ -351,12 +379,20 @@
   /** /media/... → md에 넣을 상대경로 */
   function mediaUrlToMdSrc(url, draftPath) {
     const meta = parseSrcMeta(url);
-    let file = meta.file;
+    let file = decodeMediaPath(meta.file);
     const draftPrefix = mediaBase(draftPath);
-    if (file.startsWith(draftPrefix)) {
-      file = file.slice(draftPrefix.length);
+    // 인코딩된 draftPrefix 와 비교
+    const draftPrefixEnc = "/media/" + encodeMediaPath(draftDir(draftPath)) + "/";
+    if (file.startsWith(draftPrefix) || meta.file.startsWith(draftPrefix)) {
+      file = file.startsWith(draftPrefix)
+        ? file.slice(draftPrefix.length)
+        : decodeMediaPath(meta.file.slice(draftPrefix.length));
+    } else if (meta.file.startsWith(draftPrefixEnc)) {
+      file = decodeMediaPath(meta.file.slice(draftPrefixEnc.length));
     } else if (file.startsWith("/media/")) {
       file = file.slice("/media/".length);
+    } else if (meta.file.startsWith("/media/")) {
+      file = decodeMediaPath(meta.file.slice("/media/".length));
     }
     let out = file;
     if (meta.w !== 100) out += `#w=${meta.w}`;
@@ -584,6 +620,24 @@
   }
 
   /** md 상대 이미지 → 에디터용 /media/... URL. 영상은 포스터 img. */
+  /**
+   * Toast UI 버그: 표 칸(|…|) 안의 <!-- … --> 를 htmlInline 이 파싱하다
+   * match null → [1] 접근으로 흰 화면(Cannot read properties of null).
+   * 편집기 입력만 치환하고, 저장 시 DOM→md 경로에는 영향 없음.
+   */
+  function neutralizeTableCellHtmlComments(md) {
+    return String(md || "")
+      .split("\n")
+      .map((line) => {
+        if (!/^\s*\|/.test(line) || line.indexOf("<!--") < 0) return line;
+        return line.replace(/<!--([\s\S]*?)-->/g, (_, inner) => {
+          const t = String(inner || "").replace(/\s+/g, " ").trim();
+          return t ? `(${t})` : "";
+        });
+      })
+      .join("\n");
+  }
+
   function bodyToEditor(body, path) {
     const withMedia = body.replace(
       /!\[([^\]]*)\]\((?!https?:|data:|\/)([^)]+)\)/g,
@@ -592,7 +646,9 @@
         return `![${alt}](${mdSrcToMediaUrl(src, path)})`;
       }
     );
-    return stripImageRowComments(captionsForEditor(withMedia));
+    return neutralizeTableCellHtmlComments(
+      stripImageRowComments(captionsForEditor(withMedia))
+    );
   }
 
   function makeVideoPosterImg(mediaUrl, mdFile, alt) {
@@ -1720,6 +1776,32 @@
     "#ffffff",
   ];
 
+  /** 글자 배경(형광)용 — 밝은 톤 위주 + 강조색 */
+  const PE_BG_COLOR_PRESET = [
+    "#fef08a",
+    "#fde047",
+    "#fbbf24",
+    "#fdba74",
+    "#fecaca",
+    "#f9a8d4",
+    "#e9d5ff",
+    "#c4b5fd",
+    "#bfdbfe",
+    "#93c5fd",
+    "#a5f3fc",
+    "#99f6e4",
+    "#bbf7d0",
+    "#86efac",
+    "#d9f99d",
+    "#e5e7eb",
+    "#f3f4f6",
+    "#ffffff",
+    "#0B6B72",
+    "#2563eb",
+    "#dc2626",
+    "#181818",
+  ];
+
   function parseSpanStyle(style) {
     const out = {};
     String(style || "")
@@ -1789,6 +1871,17 @@
     return true;
   }
 
+  function normalizeHexColor(raw) {
+    let s = String(raw || "").trim();
+    if (!s) return null;
+    if (s[0] !== "#") s = `#${s}`;
+    if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+      s = `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`;
+    }
+    if (!/^#[0-9a-fA-F]{6}$/.test(s) && !/^#[0-9a-fA-F]{8}$/.test(s)) return null;
+    return s.toLowerCase();
+  }
+
   function makeBgColorToolbarItem() {
     const button = document.createElement("button");
     button.type = "button";
@@ -1802,9 +1895,14 @@
     const popup = document.createElement("div");
     popup.className = "pe-color-popup";
     popup.hidden = true;
+
+    const label = document.createElement("div");
+    label.className = "pe-color-label";
+    label.textContent = "배경색 샘플";
+
     const swatches = document.createElement("div");
-    swatches.className = "pe-color-swatches";
-    PE_COLOR_PRESET.forEach((c) => {
+    swatches.className = "pe-color-swatches pe-color-swatches-wide";
+    PE_BG_COLOR_PRESET.forEach((c) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "pe-color-swatch";
@@ -1819,6 +1917,73 @@
       });
       swatches.appendChild(b);
     });
+
+    const customRow = document.createElement("div");
+    customRow.className = "pe-color-custom";
+    const customLabel = document.createElement("span");
+    customLabel.className = "pe-color-label";
+    customLabel.textContent = "직접 선택";
+    const picker = document.createElement("input");
+    picker.type = "color";
+    picker.value = "#fef08a";
+    picker.title = "색 선택";
+    picker.className = "pe-color-native";
+    const hexInput = document.createElement("input");
+    hexInput.type = "text";
+    hexInput.className = "pe-color-hex";
+    hexInput.value = "#fef08a";
+    hexInput.placeholder = "#fef08a";
+    hexInput.spellcheck = false;
+    const applyBtn = document.createElement("button");
+    applyBtn.type = "button";
+    applyBtn.className = "btn pe-color-apply";
+    applyBtn.textContent = "적용";
+
+    function applyCustom(raw) {
+      const hex = normalizeHexColor(raw);
+      if (!hex) {
+        setStatus("색 코드가 올바르지 않습니다 (#rgb / #rrggbb)", "dirty");
+        return;
+      }
+      picker.value = hex.slice(0, 7);
+      hexInput.value = hex;
+      applySpanCss({ "background-color": hex });
+      popup.hidden = true;
+    }
+
+    picker.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      captureWwSelection();
+    });
+    picker.addEventListener("input", () => {
+      hexInput.value = picker.value;
+    });
+    picker.addEventListener("change", () => {
+      captureWwSelection();
+      applyCustom(picker.value);
+    });
+    hexInput.addEventListener("mousedown", (e) => e.stopPropagation());
+    hexInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyCustom(hexInput.value);
+      }
+    });
+    applyBtn.addEventListener("mousedown", (e) => e.preventDefault());
+    applyBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyCustom(hexInput.value || picker.value);
+    });
+
+    customRow.appendChild(customLabel);
+    const customControls = document.createElement("div");
+    customControls.className = "pe-color-custom-row";
+    customControls.appendChild(picker);
+    customControls.appendChild(hexInput);
+    customControls.appendChild(applyBtn);
+    customRow.appendChild(customControls);
+
     const clearBtn = document.createElement("button");
     clearBtn.type = "button";
     clearBtn.className = "btn pe-color-clear";
@@ -1829,7 +1994,10 @@
       applySpanCss({ "background-color": "" });
       popup.hidden = true;
     });
+
+    popup.appendChild(label);
     popup.appendChild(swatches);
+    popup.appendChild(customRow);
     popup.appendChild(clearBtn);
     document.body.appendChild(popup);
 
@@ -1842,7 +2010,7 @@
       e.stopPropagation();
       captureWwSelection();
       const rect = button.getBoundingClientRect();
-      popup.style.left = `${Math.max(8, rect.left)}px`;
+      popup.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 280))}px`;
       popup.style.top = `${rect.bottom + 6}px`;
       popup.hidden = !popup.hidden;
     });
@@ -4278,87 +4446,111 @@
       ]);
     }
 
-    editor = new toastui.Editor({
-      el,
-      height: "100%",
-      initialEditType: "wysiwyg",
-      previewStyle: "vertical",
-      hideModeSwitch: true,
-      usageStatistics: false,
-      autofocus: true,
-      initialValue: initialMd,
-      plugins: editorPlugins,
-      customHTMLSanitizer: peSanitizeHtml,
-      toolbarItems: [
-        ["heading", "bold", "italic", "strike"],
-        ["hr", "quote"],
-        ["ul", "ol", "task", "indent", "outdent"],
-        [
-          "table",
-          "image",
-          makeVideoToolbarItem(),
-          "link",
-          makeAlignToolbarItem("left", "왼쪽 정렬"),
-          makeAlignToolbarItem("center", "가운데 정렬"),
-          makeAlignToolbarItem("right", "오른쪽 정렬"),
-          makeBgColorToolbarItem(),
+    let safeInitial = initialMd;
+    try {
+      // 생성 직전 한 번 더 방어 (표 칸 HTML 주석 등)
+      safeInitial = neutralizeTableCellHtmlComments(initialMd);
+    } catch (_) {
+      safeInitial = initialMd;
+    }
+
+    try {
+      editor = new toastui.Editor({
+        el,
+        height: "100%",
+        initialEditType: "wysiwyg",
+        previewStyle: "vertical",
+        hideModeSwitch: true,
+        usageStatistics: false,
+        autofocus: true,
+        initialValue: safeInitial,
+        plugins: editorPlugins,
+        customHTMLSanitizer: peSanitizeHtml,
+        toolbarItems: [
+          // colorSyntax 플러그인이 group0 index3에 글자색을 끼워 넣음
+          // → heading, bold, italic, [글자색], [배경색], strike
+          ["heading", "bold", "italic", makeBgColorToolbarItem(), "strike"],
+          ["hr", "quote"],
+          ["ul", "ol", "task", "indent", "outdent"],
+          [
+            "table",
+            "image",
+            makeVideoToolbarItem(),
+            "link",
+            makeAlignToolbarItem("left", "왼쪽 정렬"),
+            makeAlignToolbarItem("center", "가운데 정렬"),
+            makeAlignToolbarItem("right", "오른쪽 정렬"),
+          ],
+          ["code", "codeblock"],
         ],
-        ["code", "codeblock"],
-      ],
-      hooks: {
-        addImageBlobHook: (blob, callback) => {
-          const file =
-            blob instanceof File
-              ? blob
-              : new File([blob], blob.name || `paste-${Date.now()}.png`, {
-                  type: blob.type || "image/png",
-                });
-          uploadFile(file)
-            .then((data) => {
-              const url = mediaBase(currentPath) + data.md_path;
-              const alt = file.name.replace(/\.[^.]+$/, "");
-              callback(url, alt);
-              setStatus(`이미지 추가 · ${data.md_path}`, "ok");
+        hooks: {
+          addImageBlobHook: (blob, callback) => {
+            const file =
+              blob instanceof File
+                ? blob
+                : new File([blob], blob.name || `paste-${Date.now()}.png`, {
+                    type: blob.type || "image/png",
+                  });
+            uploadFile(file)
+              .then((data) => {
+                const url =
+                  mediaBase(currentPath) + encodeMediaPath(data.md_path);
+                const alt = String(data.md_path || file.name)
+                  .split("/")
+                  .pop()
+                  .replace(/\.[^.]+$/, "");
+                callback(url, alt);
+                setStatus(`이미지 추가 · ${data.md_path}`, "ok");
+                setTimeout(() => {
+                  decorateAllImages();
+                  bindImageUi();
+                  markDirty();
+                }, 50);
+              })
+              .catch((e) => {
+                setStatus(String(e.message || e), "dirty");
+              });
+          },
+        },
+        events: {
+          change: () => {
+            if (!suppressChange) {
+              markDirty();
               setTimeout(() => {
                 decorateAllImages();
                 bindImageUi();
-                markDirty();
-              }, 50);
-            })
-            .catch((e) => {
-              setStatus(String(e.message || e), "dirty");
-            });
+                decorateImageRowTables();
+                // 셀 타이핑 중에는 표 DOM을 건드리지 않음 (caret 유지)
+                if (findTableFromSelection()) {
+                  if (selectedTable) positionColResizeHandles(selectedTable);
+                } else {
+                  paintAllTableColWidths();
+                }
+              }, 30);
+            }
+          },
+          load: () => {
+            decorateAllImages();
+            bindImageUi();
+            collapseEmptyCaptionGaps();
+            decorateGapsFromBody(lastBodyForGaps);
+            decorateTableAlignFromBody(lastBodyForGaps);
+            decorateTableColsFromBody(lastBodyForGaps);
+            decorateTextAlignFromBody(lastBodyForGaps);
+            decorateImageRowsFromBody(lastBodyForGaps);
+          },
         },
-      },
-      events: {
-        change: () => {
-          if (!suppressChange) {
-            markDirty();
-            setTimeout(() => {
-              decorateAllImages();
-              bindImageUi();
-              decorateImageRowTables();
-              // 셀 타이핑 중에는 표 DOM을 건드리지 않음 (caret 유지)
-              if (findTableFromSelection()) {
-                if (selectedTable) positionColResizeHandles(selectedTable);
-              } else {
-                paintAllTableColWidths();
-              }
-            }, 30);
-          }
-        },
-        load: () => {
-          decorateAllImages();
-          bindImageUi();
-          collapseEmptyCaptionGaps();
-          decorateGapsFromBody(lastBodyForGaps);
-          decorateTableAlignFromBody(lastBodyForGaps);
-          decorateTableColsFromBody(lastBodyForGaps);
-          decorateTextAlignFromBody(lastBodyForGaps);
-          decorateImageRowsFromBody(lastBodyForGaps);
-        },
-      },
-    });
+      });
+    } catch (err) {
+      console.error("createEditor failed", err);
+      editor = null;
+      el.innerHTML =
+        '<p style="padding:1.5rem;color:#b00020;line-height:1.5">편집기를 열지 못했습니다. 표 칸 안의 HTML 주석(&lt;!-- --&gt;)이나 깨진 마크업을 확인하세요.<br><small>' +
+        String((err && err.message) || err).replace(/</g, "&lt;") +
+        "</small></p>";
+      setStatus("편집기 로드 실패 · 표 칸 HTML 주석 등 확인", "dirty");
+      return;
+    }
 
     setTimeout(() => {
       decorateAllImages();
@@ -4682,8 +4874,11 @@
     if (!editor || !file) return;
     try {
       const data = await uploadFile(file);
-      const url = mediaBase(currentPath) + data.md_path;
-      const alt = file.name.replace(/\.[^.]+$/, "");
+      const url = mediaBase(currentPath) + encodeMediaPath(data.md_path);
+      const alt = String(data.md_path || file.name)
+        .split("/")
+        .pop()
+        .replace(/\.[^.]+$/, "");
       editor.exec("addImage", { imageUrl: url, altText: alt });
       setStatus(`이미지 추가 · ${data.md_path}`, "ok");
       setTimeout(() => {

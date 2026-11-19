@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -206,6 +207,27 @@ def sanitize_slug(raw: str) -> str:
     s = SLUG_SAFE_RE.sub("-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
     return s[:60]
+
+
+def sanitize_upload_filename(raw: str) -> str:
+    """마크다운·브라우저 URL에 안전한 업로드 파일명.
+
+    macOS 스크린샷의 공백·U+202F(좁은 nobreak space) 등이
+    `![…](images/Screenshot …)` 에서 파서가 URL을 잘라 이미지가 안 보이게 한다.
+    """
+    name = Path(raw or "").name
+    if not name:
+        return "image.png"
+    name = unicodedata.normalize("NFKC", name)
+    for ch in ("\u202f", "\u00a0", "\u2009", "\u2007", "\u2028", "\u2029"):
+        name = name.replace(ch, " ")
+    ext = Path(name).suffix.lower()
+    stem = Path(name).stem
+    if ext not in ALLOWED_UPLOAD_EXT:
+        ext = ".png"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem)
+    stem = re.sub(r"-{2,}", "-", stem).strip("-_.") or "image"
+    return f"{stem[:120]}{ext}"
 
 
 def unique_draft_dir(topic: str, slug: str) -> Path:
@@ -918,7 +940,7 @@ class Handler(BaseHTTPRequestHandler):
     def _upload(self) -> None:
         data = self._read_json()
         rel = data.get("path") or ""
-        filename = Path(data.get("filename") or "").name
+        filename = sanitize_upload_filename(Path(data.get("filename") or "").name)
         b64 = data.get("content_base64") or ""
         if not filename or not b64:
             raise ValueError("filename and content_base64 required")
